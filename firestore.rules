@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && getUserRole() == 'teacher';
+    }
+
+    function isStudent() {
+      return isAuthenticated() && getUserRole() == 'student';
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(teacherId) && isTeacher();
+    }
+
+    match /students/{studentId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(studentId) && isStudent();
+    }
+
+    match /classrooms/{classroomId} {
+      allow read: if isAuthenticated();
+      allow create: if isTeacher();
+      allow update, delete: if isTeacher() && resource.data.teacherId == request.auth.uid;
+    }
+
+    match /attendanceSessions/{sessionId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isTeacher();
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated();
+      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /faceData/{studentId} {
+      allow read: if isOwner(studentId);
+      allow write: if isOwner(studentId) && isStudent();
+    }
+
+    match /notes/{noteId} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher();
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher();
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAuthenticated();
+      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+    }
+
+    match /questionBank/{qbId} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher();
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher();
+    }
+
+    match /devices/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+  }
+}

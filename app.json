@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "AttendX",
+    "slug": "attendx",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a56db"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.attendx.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow AttendX to access your camera for face verification.",
+        "NSLocationWhenInUseUsageDescription": "Allow AttendX to use your location for attendance verification.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Allow AttendX to use your location for attendance verification."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a56db"
+      },
+      "package": "com.attendx.app",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-asset",
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow AttendX to access your camera for face verification."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow AttendX to use your location for attendance verification."
+        }
+      ]
+    ],
+    "scheme": "attendx",
+    "extra": {
+      "router": {
+        "origin": false
+      }
+    }
+  }
+}
