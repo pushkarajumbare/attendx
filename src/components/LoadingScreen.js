@@ -1,13 +1,19 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { ActivityIndicator, Text } from 'react-native-paper';
-import { COLORS } from '../constants';
+import { useAppTheme } from '../context/ThemeContext';
 
 export function LoadingScreen({ message = 'Loading...' }) {
+  const { colors } = useAppTheme();
+
   return (
-    <View style={styles.container}>
-      <ActivityIndicator size="large" color={COLORS.primary} />
-      <Text style={styles.text}>{message}</Text>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <ActivityIndicator size="large" color={colors.primary} />
+      {message ? (
+        <Text style={[styles.message, { color: colors.textSecondary }]}>
+          {message}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -17,10 +23,11 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
+    padding: 24,
   },
-  text: {
-    marginTop: 16,
-    color: COLORS.textSecondary,
+  message: {
+    marginTop: 14,
+    fontSize: 14,
+    fontWeight: '500',
   },
 });

@@ -1,133 +1,109 @@
 import React, { useState } from 'react';
 import { View, StyleSheet, Alert } from 'react-native';
-import { Text, ActivityIndicator } from 'react-native-paper';
+import { ActivityIndicator, Text } from 'react-native-paper';
 import { useRouter } from 'expo-router';
+
 import { useAuth } from '../../src/context/AuthContext';
-import { registerFaceSamples } from '../../src/services/faceService';
+import { useAppTheme } from '../../src/context/ThemeContext';
 import { FaceCamera } from '../../src/components/FaceCamera';
+import { registerFaceSamples } from '../../src/services/faceService';
+import { THEME_COLORS } from '../../src/constants';
 
 export default function FaceRegisterScreen() {
   const router = useRouter();
-  const { profile, refreshProfile } = useAuth();
-  const uid = profile?.uid;
+  const { user, profile, refreshProfile } = useAuth();
+  const { colors, isDark } = useAppTheme();
+  const uid = user?.uid;
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('');
 
-  // ==========================================
-  // REAL BIO-METRIC CAPTURE HANDLER
-  // ==========================================
-  const handleFaceScanComplete = async (capturedSamples) => {
+  const handleFaceScanComplete = async (samples) => {
     try {
       if (!uid) {
-        Alert.alert('Error', 'User account context missing. Cannot upload.');
+        Alert.alert('Authentication Error', 'Student account session not found. Please log in again.');
+        return;
+      }
+
+      if (!Array.isArray(samples) || samples.length !== 3) {
+        Alert.alert('Capture Error', 'Capture front, left, and right face samples before saving.');
         return;
       }
 
       setIsSubmitting(true);
-      console.log(`Sending ${capturedSamples.length} real samples to faceService...`);
+      setSyncStatus('Creating on-device face template...');
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
-      // Transmit the verified landmark matrices down to Firebase
-      const success = await registerFaceSamples(uid, capturedSamples);
+      setSyncStatus('Saving face template...');
+      const success = await registerFaceSamples(uid, samples);
 
       if (success) {
-        // Sync profile state hooks instantly to reflect active registration status
-        await refreshProfile?.();
+        setSyncStatus('Updating profile...');
+        if (typeof refreshProfile === 'function') {
+          await refreshProfile();
+        }
 
         Alert.alert(
-          'Registration Success',
-          'Your multi-angle secure face template profile has been successfully generated.',
+          'Registration Succeeded',
+          'Your face template has been enrolled. You can now use Face Verification for attendance.',
           [
             {
-              text: 'Finish Setup',
+              text: 'Go to Dashboard',
               onPress: () => router.replace('/(student)/dashboard'),
             },
           ]
         );
       }
     } catch (error) {
-      console.log('Real Registration Pipeline Crash:', error);
+      console.error('[FaceRegister] Submission error:', error);
+      setIsSubmitting(false);
+      setSyncStatus('');
       Alert.alert(
         'Registration Failed',
-        error?.message || 'Biometric upload pipeline timed out.'
+        error?.message || 'Could not register your face. Please try again.',
+        [{ text: 'Retry' }]
       );
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
-  // ==========================================
-  // USER CONTEXT SYNCHRONIZATION SCREENS
-  // ==========================================
+  const handleCancel = () => {
+    router.back();
+  };
+
   if (!profile) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" />
-        <Text style={styles.loadingText}>Syncing session profile...</Text>
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
+          Loading student credentials...
+        </Text>
       </View>
     );
   }
 
   if (isSubmitting) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#00FF00" />
-        <Text style={styles.loadingText}>Encrypting biometrics & syncing nodes...</Text>
+      <View style={[styles.center, { backgroundColor: isDark ? '#0C0A09' : '#FAF8F5' }]}>
+        <ActivityIndicator size="large" color={THEME_COLORS.primary} />
+        <Text style={[styles.syncTitle, { color: colors.text }]}>{syncStatus}</Text>
+        <Text style={[styles.syncSubtext, { color: colors.textSecondary }]}>
+          Please wait while your face template is saved securely.
+        </Text>
       </View>
     );
   }
 
-  // ==========================================
-  // RENDERING LIVE CAMERA SCAN OVERLAY
-  // ==========================================
   return (
     <View style={styles.container}>
-      <View style={styles.headerSpacer}>
-        <Text variant="headlineSmall" style={styles.headerTitle}>
-          Biometric Alignment
-        </Text>
-      </View>
-
-      {/* Connects directly to the automated multi-shot live engine */}
-      <View style={styles.cameraFrame}>
-        <FaceCamera onCapture={handleFaceScanComplete} />
-      </View>
+      <FaceCamera mode="register" onCapture={handleFaceScanComplete} onCancel={handleCancel} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000000', // Matches deep black for seamless camera views
-  },
-  headerSpacer: {
-    paddingTop: 50,
-    paddingBottom: 15,
-    backgroundColor: '#121212',
-    borderBottomWidth: 1,
-    borderColor: '#222',
-  },
-  headerTitle: {
-    color: '#FFF',
-    textAlign: 'center',
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  cameraFrame: {
-    flex: 1,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#121212',
-    padding: 24,
-  },
-  loadingText: {
-    color: '#AAA',
-    marginTop: 15,
-    fontSize: 15,
-    fontWeight: '500',
-    textAlign: 'center',
-  },
+  container: { flex: 1, backgroundColor: '#000' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  loadingText: { marginTop: 16, fontSize: 15, fontWeight: '500', textAlign: 'center' },
+  syncTitle: { fontSize: 18, fontWeight: '700', marginTop: 20, marginBottom: 8, textAlign: 'center' },
+  syncSubtext: { fontSize: 13, textAlign: 'center', lineHeight: 20, paddingHorizontal: 24 },
 });

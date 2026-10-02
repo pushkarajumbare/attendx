@@ -3,13 +3,12 @@ import { Tabs } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { View, ActivityIndicator } from 'react-native';
 
-import { COLORS } from '../../src/constants';
+import { useAppTheme } from '../../src/context/ThemeContext';
 import { useAuth } from '../../src/context/AuthContext';
 
 export default function TeacherLayout() {
   const { profile, loading } = useAuth();
-
-  // SAFE UID ACCESS (prevents null crash)
+  const { colors, isDark } = useAppTheme();
   const uid = profile?.uid;
 
   // 1. LOADING SCREEN
@@ -19,23 +18,23 @@ export default function TeacherLayout() {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: COLORS.background,
+        backgroundColor: colors.background,
       }}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
-  // 2. AUTH GUARD (IMPORTANT FIX)
+  // 2. AUTH GUARD
   if (!uid) {
     return (
       <View style={{
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: COLORS.background,
+        backgroundColor: colors.background,
       }}>
-        <ActivityIndicator size="small" color={COLORS.primary} />
+        <ActivityIndicator size="small" color={colors.primary} />
       </View>
     );
   }
@@ -45,10 +44,22 @@ export default function TeacherLayout() {
     <Tabs
       screenOptions={{
         headerShown: true,
-        tabBarActiveTintColor: COLORS.primary,
+        headerStyle: {
+          backgroundColor: colors.surface,
+        },
+        headerTitleStyle: {
+          color: colors.text,
+          fontWeight: '700',
+        },
+        headerTintColor: colors.primary,
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textSecondary,
         tabBarStyle: {
-          height: 60,
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+          height: 62,
           paddingBottom: 8,
+          paddingTop: 4,
         },
       }}
     >
@@ -68,6 +79,16 @@ export default function TeacherLayout() {
           title: 'Classes',
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="google-classroom" size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="assignments"
+        options={{
+          title: 'Tasks',
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="clipboard-text" size={size} color={color} />
           ),
         }}
       />
@@ -102,13 +123,13 @@ export default function TeacherLayout() {
         }}
       />
 
-      {/* HIDDEN SCREENS */}
-      <Tabs.Screen name="create-classroom" options={{ href: null }} />
-      <Tabs.Screen name="notes" options={{ href: null }} />
-      <Tabs.Screen name="assignments" options={{ href: null }} />
-      <Tabs.Screen name="question-bank" options={{ href: null }} />
-      <Tabs.Screen name="announcements" options={{ href: null }} />
-      <Tabs.Screen name="settings" options={{ href: null }} />
+      {/* HIDDEN STACK SCREENS */}
+      <Tabs.Screen name="create-classroom" options={{ href: null, title: 'Create Classroom' }} />
+      <Tabs.Screen name="classroom-students" options={{ href: null, title: 'Enrolled Students' }} />
+      <Tabs.Screen name="notes" options={{ href: null, title: 'Files & Notes' }} />
+      <Tabs.Screen name="question-bank" options={{ href: null, title: 'Question Bank' }} />
+      <Tabs.Screen name="announcements" options={{ href: null, title: 'Announcements' }} />
+      <Tabs.Screen name="settings" options={{ href: null, title: 'Settings' }} />
     </Tabs>
   );
 }

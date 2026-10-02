@@ -1,12 +1,48 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from 'react';
+import { Platform } from 'react-native';
 import { onAuthStateChanged } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import { auth } from '../config/firebase';
-import { fetchUserProfile, logOut as authLogOut } from '../services/authService';
+import {
+  fetchUserProfile,
+  logOut as authLogOut,
+} from '../services/authService';
+
 import { registerForPushNotifications } from '../services/notificationService';
 import { ROLES } from '../constants';
 
 const AuthContext = createContext(null);
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function loadProfile(uid, retries = 5) {
+  let lastError;
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      const profile = await fetchUserProfile(uid);
+
+      if (profile) {
+        return profile;
+      }
+    } catch (error) {
+      lastError = error;
+      console.log(`Profile load attempt ${i + 1} failed`, error);
+    }
+
+    await delay(500);
+  }
+
+  throw lastError || new Error('Unable to load profile');
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -15,67 +51,82 @@ export function AuthProvider({ children }) {
   const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (loggingOut) {
-        // Skip state updates during logout
-        return;
-      }
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async (firebaseUser) => {
+        if (loggingOut) return;
 
-      setUser(firebaseUser);
-      if (firebaseUser) {
+        setLoading(true);
+
         try {
-          const userProfile = await fetchUserProfile(firebaseUser.uid);
+          if (!firebaseUser) {
+            setUser(null);
+            setProfile(null);
+            return;
+          }
+
+          setUser(firebaseUser);
+
+          const userProfile = await loadProfile(firebaseUser.uid);
+
           setProfile(userProfile);
-          registerForPushNotifications(firebaseUser.uid);
+
+          if (Platform.OS !== 'web') {
+            registerForPushNotifications(firebaseUser.uid).catch(
+              (error) => {
+                console.log(
+                  'Notification registration skipped:',
+                  error?.message || error
+                );
+              }
+            );
+          }
         } catch (error) {
-          console.log('Profile fetch error:', error);
+          console.log('Profile loading failed:', error);
+
+          // IMPORTANT:
+          // Keep Firebase Auth user logged in.
+          // Only clear profile.
           setProfile(null);
+        } finally {
+          setLoading(false);
         }
-      } else {
-        setProfile(null);
       }
-      setLoading(false);
-    });
+    );
 
     return unsubscribe;
   }, [loggingOut]);
 
-  const refreshProfile = async () => {
-    if (user) {
-      try {
-        const userProfile = await fetchUserProfile(user.uid);
-        setProfile(userProfile);
-      } catch (error) {
-        console.log('Profile refresh error:', error);
-      }
-    }
-  };
+  const refreshProfile = useCallback(async () => {
+    if (!auth.currentUser) return;
 
-  const logOut = async () => {
+    try {
+      const profile = await loadProfile(auth.currentUser.uid);
+      setProfile(profile);
+    } catch (error) {
+      console.log('Refresh profile error:', error);
+    }
+  }, []);
+
+  const logOut = useCallback(async () => {
     try {
       setLoggingOut(true);
-      
-      // Clear Firebase auth
+      setLoading(true);
+
       await authLogOut();
-      
-      // Clear AsyncStorage (mobile)
-      try {
-        await AsyncStorage.clear();
-      } catch (err) {
-        console.log('AsyncStorage clear error:', err);
-      }
-      
-      // Reset context state
+
+      await AsyncStorage.clear();
+
       setUser(null);
       setProfile(null);
-      setLoading(false);
-      setLoggingOut(false);
     } catch (error) {
       console.log('Logout error:', error);
-      setLoggingOut(false);
       throw error;
+    } finally {
+      setLoggingOut(false);
+      setLoading(false);
     }
-  };
+  }, []);
 
   const value = useMemo(
     () => ({
@@ -87,14 +138,24 @@ export function AuthProvider({ children }) {
       refreshProfile,
       logOut,
     }),
-    [user, profile, loading]
+    [user, profile, loading, refreshProfile, logOut]
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (!context) throw new Error('useAuth must be used within AuthProvider');
+
+  if (!context) {
+    throw new Error(
+      'useAuth must be used inside AuthProvider'
+    );
+  }
+
   return context;
 }

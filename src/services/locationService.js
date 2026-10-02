@@ -1,9 +1,14 @@
 import * as Location from 'expo-location';
 import { getDistanceInMeters, detectFakeGps } from '../utils/helpers';
 
+// Cache permission status so we only request once per app session
+let _locationPermissionGranted = false;
+
 export async function requestLocationPermission() {
+  if (_locationPermissionGranted) return true;
   const { status } = await Location.requestForegroundPermissionsAsync();
-  return status === 'granted';
+  _locationPermissionGranted = status === 'granted';
+  return _locationPermissionGranted;
 }
 
 export async function getCurrentLocation() {

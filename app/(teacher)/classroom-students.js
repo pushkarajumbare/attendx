@@ -1,27 +1,20 @@
 import { useState, useCallback } from 'react';
-import {
-  View,
-  ScrollView,
-  StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
-  TextInput as RNTextInput,
-} from 'react-native';
+import { View, ScrollView, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
 import { Text, Card, Button, Searchbar, Chip, Avatar } from 'react-native-paper';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+
 import { useAuth } from '../../src/context/AuthContext';
-import {
-  getClassroomByCode,
-  getStudentClassrooms,
-} from '../../src/services/classroomService';
+import { useAppTheme } from '../../src/context/ThemeContext';
+import { getClassroomStudents, getTeacherClassrooms } from '../../src/services/classroomService';
 import { getAttendanceStats } from '../../src/services/attendanceService';
-import { COLORS } from '../../src/constants';
+import { THEME_COLORS } from '../../src/constants';
 
 export default function ClassroomStudentsScreen() {
   const router = useRouter();
   const { profile } = useAuth();
-  const { classroomId } = useLocalSearchParams();
-
+  const { colors, isDark } = useAppTheme();
+  const { classroomId, className: paramClassName } = useLocalSearchParams();
   const uid = profile?.uid;
 
   const [loading, setLoading] = useState(true);
@@ -40,23 +33,21 @@ export default function ClassroomStudentsScreen() {
 
     try {
       setError(null);
-      
-      // Get classroom from Firestore
-      const classroomDoc = await getClassroomByCode(classroomId);
-      if (classroomDoc) {
-        setClassroom(classroomDoc);
-        
-        // Load attendance stats for each student
+      const classes = await getTeacherClassrooms(uid);
+      const targetClass = classes?.find((c) => c.classroomId === classroomId);
+
+      if (targetClass) {
+        setClassroom(targetClass);
+        const roster = await getClassroomStudents(classroomId);
+        setStudents(roster || []);
+
         const detailsMap = {};
-        if (classroomDoc.studentIds && classroomDoc.studentIds.length > 0) {
-          for (const studentId of classroomDoc.studentIds) {
-            try {
-              const stats = await getAttendanceStats(studentId, classroomDoc.classroomId);
-              detailsMap[studentId] = stats;
-            } catch (err) {
-              console.log('Stats error for student:', studentId, err);
-              detailsMap[studentId] = { present: 0, total: 0 };
-            }
+        for (const student of roster || []) {
+          try {
+            const stats = await getAttendanceStats(student.studentId, classroomId);
+            detailsMap[student.studentId] = stats;
+          } catch (err) {
+            detailsMap[student.studentId] = { present: 0, total: 0 };
           }
         }
         setStudentDetails(detailsMap);
@@ -64,8 +55,8 @@ export default function ClassroomStudentsScreen() {
         setError('Classroom not found');
       }
     } catch (err) {
-      console.log('Load error:', err);
-      setError(err.message);
+      console.log('Load classroom students error:', err);
+      setError(err.message || 'Failed to load student roster');
     } finally {
       setLoading(false);
     }
@@ -83,57 +74,44 @@ export default function ClassroomStudentsScreen() {
     setRefreshing(false);
   }, [loadClassroomData]);
 
-  const getInitials = (name) => {
-    if (!name) return '?';
-    const parts = name.split(' ');
-    return (parts[0][0] + (parts[1]?.[0] || '')).toUpperCase();
-  };
-
   const calculatePercentage = (stats) => {
     if (!stats || stats.total === 0) return 0;
     return Math.round((stats.present / stats.total) * 100);
   };
 
   const getAttendanceColor = (percentage) => {
-    if (percentage >= 80) return COLORS.success;
-    if (percentage >= 60) return COLORS.warning;
-    return COLORS.danger;
+    if (percentage >= 80) return THEME_COLORS.success;
+    if (percentage >= 60) return THEME_COLORS.warning;
+    return THEME_COLORS.danger;
   };
 
-  const filteredStudents = classroom?.studentIds?.filter((studentId) => {
+  const filteredStudents = students.filter((s) => {
     if (!searchQuery?.trim()) return true;
-    // Simple filter - in production, would need student names from database
-    return studentId?.toLowerCase()?.includes(searchQuery?.toLowerCase() ?? '');
-  }) || [];
+    const q = searchQuery.toLowerCase();
+    return (
+      (s.name && s.name.toLowerCase().includes(q)) ||
+      (s.email && s.email.toLowerCase().includes(q)) ||
+      (s.studentId && s.studentId.toLowerCase().includes(q))
+    );
+  });
 
-  // Loading state
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.loadingText}>Loading students...</Text>
+      <View style={[styles.centerContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading student roster...</Text>
       </View>
     );
   }
 
-  // Error state
-  if (error) {
+  if (error || !classroom) {
     return (
-      <View style={styles.centerContainer}>
-        <Text variant="titleMedium" style={styles.errorText}>{error}</Text>
-        <Button mode="contained" onPress={loadClassroomData} style={styles.retryBtn}>
-          Retry
-        </Button>
-      </View>
-    );
-  }
-
-  // No classroom
-  if (!classroom) {
-    return (
-      <View style={styles.centerContainer}>
-        <Text variant="titleMedium">Classroom not found</Text>
-        <Button mode="outlined" onPress={() => router.back()}>
+      <View style={[styles.centerContainer, { backgroundColor: colors.background }]}>
+        <MaterialCommunityIcons name="alert-circle-outline" size={48} color={THEME_COLORS.danger} />
+        <Text variant="titleMedium" style={{ color: THEME_COLORS.danger, fontWeight: '700', marginTop: 8 }}>
+          {error || 'Classroom not found'}
+        </Text>
+        <Button mode="outlined" onPress={() => router.back()} style={{ marginTop: 16 }}>
           Go Back
         </Button>
       </View>
@@ -142,89 +120,89 @@ export default function ClassroomStudentsScreen() {
 
   return (
     <ScrollView
-      style={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      style={[styles.container, { backgroundColor: colors.background }]}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
       contentContainerStyle={styles.scroll}
     >
-      {/* CLASSROOM HEADER */}
-      <Card style={styles.headerCard}>
+      <Card style={[styles.headerCard, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
         <Card.Content>
-          <Text variant="headlineSmall">{classroom.className}</Text>
-          <Text style={styles.subject}>{classroom.subject}</Text>
-          <Chip icon="account-multiple" style={styles.chip}>
-            {classroom.studentIds?.length || 0} Students
+          <Text variant="headlineSmall" style={{ fontWeight: '800', color: colors.text }}>
+            {classroom.className}
+          </Text>
+          <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 2 }}>{classroom.subject || 'General'}</Text>
+          <Chip icon="account-group" style={styles.chip} textStyle={{ fontSize: 12 }}>
+            {students.length} Enrolled Students
           </Chip>
         </Card.Content>
       </Card>
 
-      {/* SEARCH */}
       <Searchbar
-        placeholder="Search students..."
+        placeholder="Search by student name or email..."
         onChangeText={setSearchQuery}
         value={searchQuery}
-        style={styles.search}
+        style={[styles.search, { backgroundColor: colors.surface, borderColor: colors.border }]}
+        inputStyle={{ color: colors.text }}
+        iconColor={colors.textSecondary}
       />
 
-      {/* STUDENTS LIST */}
-      <Text variant="titleMedium" style={styles.sectionTitle}>
-        Class Roster
+      <Text variant="titleMedium" style={{ fontWeight: '700', marginBottom: 12, color: colors.text }}>
+        Class Roster ({filteredStudents.length})
       </Text>
 
       {filteredStudents.length === 0 ? (
-        <Card style={styles.emptyCard}>
-          <Card.Content>
-            <Text variant="titleMedium" style={styles.emptyTitle}>
-              No students yet
-            </Text>
-            <Text style={styles.emptyText}>
-              Students can join using the classroom code
+        <Card style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
+          <Card.Content style={{ alignItems: 'center', paddingVertical: 20 }}>
+            <MaterialCommunityIcons name="account-search-outline" size={40} color={colors.textSecondary} />
+            <Text style={{ fontWeight: '700', marginTop: 8, color: colors.text }}>No Students Found</Text>
+            <Text style={{ color: colors.textSecondary, fontSize: 13, textAlign: 'center', marginTop: 4 }}>
+              Students can enroll using classroom code: {classroom.classroomCode}
             </Text>
           </Card.Content>
         </Card>
       ) : (
-        filteredStudents.map((studentId, index) => {
-          const stats = studentDetails[studentId] || { present: 0, total: 0 };
+        filteredStudents.map((student, index) => {
+          const stats = studentDetails[student.studentId] || { present: 0, total: 0 };
           const percentage = calculatePercentage(stats);
           const attendanceColor = getAttendanceColor(percentage);
 
           return (
-            <Card key={studentId} style={styles.studentCard}>
+            <Card
+              key={student.studentId}
+              style={[styles.studentCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              mode="outlined"
+            >
               <Card.Content style={styles.studentContent}>
                 <View style={styles.studentRow}>
-                  {/* AVATAR + NUMBER */}
                   <View style={styles.studentInfo}>
-                    <View style={styles.numberBadge}>
-                      <Text style={styles.numberText}>{index + 1}</Text>
+                    <View style={[styles.numberBadge, { backgroundColor: isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight }]}>
+                      <Text style={[styles.numberText, { color: colors.primary }]}>{index + 1}</Text>
                     </View>
                     <Avatar.Text
                       size={40}
-                      label={studentId.slice(0, 2).toUpperCase()}
-                      style={{ backgroundColor: COLORS.primary }}
+                      label={(student.name || 'Student').slice(0, 2).toUpperCase()}
+                      style={{ backgroundColor: colors.primary }}
                     />
                     <View style={styles.studentMeta}>
-                      <Text variant="titleSmall" style={styles.studentId}>
-                        {studentId}
+                      <Text variant="titleSmall" style={{ fontWeight: '700', color: colors.text }}>
+                        {student.name || 'Student'}
                       </Text>
-                      <Text variant="bodySmall" style={styles.statsText}>
-                        {stats.present} / {stats.total} attended
+                      <Text variant="bodySmall" style={{ color: colors.textSecondary }}>
+                        {student.email || student.studentId}
                       </Text>
                     </View>
                   </View>
 
-                  {/* ATTENDANCE PERCENTAGE */}
                   <View style={styles.attendanceBox}>
-                    <Text
-                      variant="headlineSmall"
-                      style={[styles.percentage, { color: attendanceColor }]}
-                    >
+                    <Text variant="headlineSmall" style={{ fontWeight: '800', color: attendanceColor }}>
                       {percentage}%
                     </Text>
-                    <Text style={styles.percentageLabel}>Attendance</Text>
+                    <Text style={{ fontSize: 11, color: colors.textSecondary }}>
+                      {stats.present}/{stats.total} sessions
+                    </Text>
                   </View>
                 </View>
 
-                {/* PROGRESS BAR */}
-                <View style={styles.progressContainer}>
+                <View style={[styles.progressContainer, { backgroundColor: colors.border }]}>
                   <View
                     style={[
                       styles.progressBar,
@@ -240,85 +218,27 @@ export default function ClassroomStudentsScreen() {
           );
         })
       )}
-
-      {/* ACTION BUTTONS */}
-      <View style={styles.actions}>
-        <Button
-          mode="outlined"
-          onPress={() => router.back()}
-          style={styles.actionBtn}
-        >
-          Back
-        </Button>
-        <Button
-          mode="contained"
-          onPress={() => router.push(`/(teacher)/attendance-session`)}
-          style={styles.actionBtn}
-        >
-          Start Session
-        </Button>
-      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.background },
-  scroll: { padding: 16, paddingBottom: 24 },
-  centerContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-    padding: 24,
-  },
-  loadingText: { marginTop: 12, color: COLORS.textSecondary },
-  errorText: { color: COLORS.danger, fontWeight: '600', textAlign: 'center' },
-  retryBtn: { marginTop: 16 },
-  headerCard: { marginBottom: 16, borderRadius: 12 },
-  subject: { color: COLORS.textSecondary, marginTop: 4 },
+  container: { flex: 1 },
+  scroll: { padding: 16, paddingBottom: 30 },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  loadingText: { marginTop: 12, fontSize: 14 },
+  headerCard: { marginBottom: 14, borderRadius: 16, borderWidth: 1 },
   chip: { alignSelf: 'flex-start', marginTop: 8 },
-  search: { marginBottom: 16 },
-  sectionTitle: { fontWeight: '600', marginBottom: 12, marginTop: 8 },
-  emptyCard: { marginBottom: 16, borderRadius: 12 },
-  emptyTitle: { textAlign: 'center', fontWeight: '600' },
-  emptyText: { textAlign: 'center', color: COLORS.textSecondary, marginTop: 8 },
-  studentCard: { marginBottom: 12, borderRadius: 12 },
-  studentContent: { paddingVertical: 12, paddingHorizontal: 16 },
-  studentRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
+  search: { marginBottom: 16, borderRadius: 12, borderWidth: 1 },
+  emptyCard: { borderRadius: 14, borderWidth: 1 },
+  studentCard: { marginBottom: 12, borderRadius: 14, borderWidth: 1 },
+  studentContent: { paddingVertical: 12, paddingHorizontal: 14 },
+  studentRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   studentInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  numberBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: COLORS.primary + '20',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  numberText: { fontWeight: '700', color: COLORS.primary, fontSize: 12 },
-  studentMeta: { marginLeft: 12, flex: 1 },
-  studentId: { fontWeight: '600', marginBottom: 2 },
-  statsText: { color: COLORS.textSecondary },
-  attendanceBox: { alignItems: 'center', marginLeft: 12 },
-  percentage: { fontWeight: '700' },
-  percentageLabel: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
-  progressContainer: {
-    height: 4,
-    backgroundColor: COLORS.border,
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
+  numberBadge: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+  numberText: { fontWeight: '700', fontSize: 12 },
+  studentMeta: { marginLeft: 10, flex: 1 },
+  attendanceBox: { alignItems: 'flex-end', marginLeft: 10 },
+  progressContainer: { height: 4, borderRadius: 2, overflow: 'hidden' },
   progressBar: { height: '100%', borderRadius: 2 },
-  actions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 16,
-  },
-  actionBtn: { flex: 1 },
 });

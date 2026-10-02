@@ -44,12 +44,12 @@ export async function createAttendanceSession(teacherId, classroomId, sessionDat
   return session;
 }
 
-// Get single active session for a classroom (if any)
+// Get single active session for a classroom (if any) — includes 'reopened' status
 export async function getActiveSession(classroomId) {
   const q = query(
     collection(db, COLLECTIONS.ATTENDANCE_SESSIONS),
     where('classroomId', '==', classroomId),
-    where('status', '==', 'active')
+    where('status', 'in', ['active', 'reopened'])
   );
   const snapshot = await getDocs(q);
   if (snapshot.empty) return null;
@@ -94,12 +94,22 @@ export async function reopenAttendanceSession(sessionId) {
   });
 }
 
+/**
+ * Mark student attendance.
+ *
+ * @param {object} params
+ * @param {string} params.studentId
+ * @param {string} params.teacherId
+ * @param {string} params.classroomId
+ * @param {string} params.sessionId
+ * @param {object} params.capturedFace - FaceCamera payload: { embedding: number[], livenessPassed: boolean }
+ */
 export async function markAttendance({
   studentId,
   teacherId,
   classroomId,
   sessionId,
-  faceBase64, // can be string or array of frames
+  capturedFace, // { embedding: number[], livenessPassed: boolean } from FaceCamera onCapture
 }) {
   const today = getTodayKey();
 
@@ -120,8 +130,17 @@ export async function markAttendance({
   }
 
   const session = sessionDoc.data();
-  if (!['active', 'reopened'].includes(session?.status)) {
+  if (!session || !session.status || !['active', 'reopened'].includes(session.status)) {
     return { success: false, reason: REJECTION_REASONS.SESSION_INACTIVE };
+  }
+
+  const classroomDoc = await getDoc(doc(db, COLLECTIONS.CLASSROOMS, classroomId));
+  if (!classroomDoc.exists()) {
+    return { success: false, reason: 'Classroom not found' };
+  }
+  const classroom = classroomDoc.data();
+  if (!Array.isArray(classroom?.studentIds) || !classroom.studentIds.includes(studentId)) {
+    return { success: false, reason: 'Student is not enrolled in this classroom' };
   }
 
   const now = new Date();
@@ -135,7 +154,8 @@ export async function markAttendance({
     return { success: false, reason: REJECTION_REASONS.TIME_EXPIRED };
   }
 
-  const faceResult = await verifyFace(studentId, faceBase64);
+  // Run local face identity verification and liveness challenge validation.
+  const faceResult = await verifyFace(studentId, capturedFace);
   if (!faceResult.verified) {
     return { success: false, reason: REJECTION_REASONS.FACE_MISMATCH, faceResult };
   }

@@ -28,6 +28,7 @@
       "package": "com.attendx.app",
       "permissions": [
         "CAMERA",
+        "RECORD_AUDIO",
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "RECEIVE_BOOT_COMPLETED",
@@ -55,6 +56,9 @@
     "extra": {
       "router": {
         "origin": false
+      },
+      "eas": {
+        "projectId": "fba526cf-164e-44e0-8d19-b0125188d55d"
       }
     }
   }

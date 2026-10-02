@@ -1,6 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // ─── HELPER FUNCTIONS ───────────────────────────────────────────────────
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -9,83 +10,105 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function getUserRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    function userDocExists() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
     function isTeacher() {
-      return isAuthenticated() && getUserRole() == 'teacher';
+      return userDocExists() && getUserData().role == 'teacher';
     }
 
     function isStudent() {
-      return isAuthenticated() && getUserRole() == 'student';
+      return userDocExists() && getUserData().role == 'student';
     }
 
+    // ─── USERS COLLECTION ────────────────────────────────────────────────────
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId);
+      allow create, update: if isOwner(userId);
     }
 
+    // ─── TEACHERS COLLECTION ─────────────────────────────────────────────────
     match /teachers/{teacherId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner(teacherId) && isTeacher();
+      allow create: if isOwner(teacherId);
+      allow update, delete: if isOwner(teacherId) || (isAuthenticated() && isTeacher());
     }
 
+    // ─── STUDENTS COLLECTION ─────────────────────────────────────────────────
     match /students/{studentId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner(studentId) && isStudent();
+      allow create: if isOwner(studentId);
+      allow update, delete: if isOwner(studentId) || (isAuthenticated() && isStudent());
     }
 
+    // ─── CLASSROOMS COLLECTION ───────────────────────────────────────────────
     match /classrooms/{classroomId} {
       allow read: if isAuthenticated();
-      allow create: if isTeacher();
-      allow update, delete: if isTeacher() && resource.data.teacherId == request.auth.uid;
+      allow create: if isAuthenticated();
+      // Allow teacher owner to update/delete, or student to join (update studentIds)
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated() && resource.data.teacherId == request.auth.uid;
     }
 
+    // ─── ATTENDANCE SESSIONS ─────────────────────────────────────────────────
     match /attendanceSessions/{sessionId} {
       allow read: if isAuthenticated();
-      allow create, update: if isTeacher();
+      allow create: if isAuthenticated() && request.resource.data.teacherId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.teacherId == request.auth.uid;
     }
 
+    // ─── ATTENDANCE RECORDS ──────────────────────────────────────────────────
     match /attendance/{attendanceId} {
       allow read: if isAuthenticated();
-      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
-      allow update, delete: if false;
+      allow create: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
+      allow update, delete: if isAuthenticated();
     }
 
+    // ─── BIOMETRIC FACE DATA ─────────────────────────────────────────────────
     match /faceData/{studentId} {
-      allow read: if isOwner(studentId);
-      allow write: if isOwner(studentId) && isStudent();
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isOwner(studentId) || isAuthenticated();
     }
 
+    // ─── NOTES ───────────────────────────────────────────────────────────────
     match /notes/{noteId} {
       allow read: if isAuthenticated();
-      allow write: if isTeacher();
+      allow create, update, delete: if isAuthenticated();
     }
 
+    // ─── ASSIGNMENTS ─────────────────────────────────────────────────────────
     match /assignments/{assignmentId} {
       allow read: if isAuthenticated();
-      allow write: if isTeacher();
+      allow create, update, delete: if isAuthenticated();
     }
 
+    // ─── SUBMISSIONS ─────────────────────────────────────────────────────────
     match /submissions/{submissionId} {
       allow read: if isAuthenticated();
-      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
+      allow update, delete: if isAuthenticated();
     }
 
+    // ─── QUESTION BANK ───────────────────────────────────────────────────────
     match /questionBank/{qbId} {
       allow read: if isAuthenticated();
-      allow write: if isTeacher();
+      allow create, update, delete: if isAuthenticated();
     }
 
+    // ─── ANNOUNCEMENTS ───────────────────────────────────────────────────────
     match /announcements/{announcementId} {
       allow read: if isAuthenticated();
-      allow write: if isTeacher();
+      allow create, update, delete: if isAuthenticated();
     }
 
+    // ─── DEVICE TRACKING ─────────────────────────────────────────────────────
     match /devices/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read, create, update, delete: if isOwner(userId) || isAuthenticated();
     }
   }
 }

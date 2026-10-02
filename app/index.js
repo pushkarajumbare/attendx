@@ -1,5 +1,5 @@
-import { useEffect } from 'react';
-import { View, StyleSheet, Image } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { View, StyleSheet } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../src/context/AuthContext';
@@ -9,11 +9,17 @@ import { COLORS, ROLES } from '../src/constants';
 export default function SplashScreen() {
   const router = useRouter();
   const { user, profile, loading } = useAuth();
+  const isMounted = useRef(true);
 
   useEffect(() => {
+    isMounted.current = true;
+
     if (loading) return;
 
     const timer = setTimeout(() => {
+      // Guard against routing if component has unmounted
+      if (!isMounted.current) return;
+
       // No user = not logged in, go to role selection
       if (!user) {
         router.replace('/role-select');
@@ -26,13 +32,13 @@ export default function SplashScreen() {
         return;
       }
 
-      // Teacher role
+      // Teacher role navigation
       if (profile.role === ROLES.TEACHER) {
         router.replace('/(teacher)/dashboard');
         return;
       }
 
-      // Student role
+      // Student role navigation
       if (profile.role === ROLES.STUDENT) {
         if (!profile.faceRegistered) {
           router.replace('/(student)/face-register');
@@ -42,12 +48,15 @@ export default function SplashScreen() {
         return;
       }
 
-      // Unknown role
+      // Fallback for Unknown role
       router.replace('/role-select');
     }, 2000);
 
-    return () => clearTimeout(timer);
-  }, [loading, user, profile]);
+    return () => {
+      isMounted.current = false;
+      clearTimeout(timer);
+    };
+  }, [loading, user, profile, router]);
 
   if (loading) return <LoadingScreen message="Starting AttendX..." />;
 
@@ -65,7 +74,7 @@ export default function SplashScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS?.primary || '#1a56db', // Added fallback to prevent style crashes
     justifyContent: 'center',
     alignItems: 'center',
   },

@@ -1,7 +1,9 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Text, Button } from 'react-native-paper';
-import { COLORS } from '../constants';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useAppTheme } from '../context/ThemeContext';
+import { THEME_COLORS } from '../constants';
 
 export function ErrorScreen({ 
   title = 'Something went wrong', 
@@ -9,24 +11,25 @@ export function ErrorScreen({
   onRetry = null,
   icon = null
 }) {
+  const { colors } = useAppTheme();
+
   return (
-    <View style={styles.container}>
-      {icon && (
-        <View style={styles.iconContainer}>
-          {icon}
-        </View>
-      )}
-      <Text variant="titleMedium" style={styles.title}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={styles.iconContainer}>
+        {icon || <MaterialCommunityIcons name="alert-circle-outline" size={56} color={THEME_COLORS.danger} />}
+      </View>
+      <Text variant="titleLarge" style={[styles.title, { color: THEME_COLORS.danger }]}>
         {title}
       </Text>
-      {message && (
-        <Text style={styles.message}>{message}</Text>
-      )}
+      {message ? (
+        <Text style={[styles.message, { color: colors.textSecondary }]}>{message}</Text>
+      ) : null}
       {onRetry && (
         <Button 
           mode="contained" 
           onPress={onRetry} 
           style={styles.button}
+          buttonColor={colors.primary}
         >
           Try Again
         </Button>
@@ -41,23 +44,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 32,
-    backgroundColor: COLORS.background,
   },
   iconContainer: {
     marginBottom: 16,
   },
   title: {
-    color: COLORS.danger,
-    fontWeight: '600',
+    fontWeight: '700',
     textAlign: 'center',
+    fontSize: 18,
   },
   message: {
-    marginTop: 12,
-    color: COLORS.textSecondary,
+    marginTop: 10,
     textAlign: 'center',
     lineHeight: 20,
+    fontSize: 13,
   },
   button: {
-    marginTop: 24,
+    marginTop: 20,
+    borderRadius: 12,
   },
 });

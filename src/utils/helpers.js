@@ -97,3 +97,17 @@ export function truncate(str, length = 20) {
   return str.substring(0, length) + '...';
 }
 
+// CSV Export Utility for Attendance Reports
+export function exportAttendanceToCSV(records = [], classroomName = 'Classroom') {
+  const headers = ['Attendance ID', 'Student ID', 'Status', 'Date', 'Distance (m)', 'Face Confidence (%)'];
+  const rows = records.map((r) => [
+    `"${r.attendanceId || ''}"`,
+    `"${r.studentId || ''}"`,
+    `"${r.status || 'present'}"`,
+    `"${r.date || ''}"`,
+    r.distanceMeters ?? 0,
+    r.faceConfidence ?? 0,
+  ]);
+  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+}
+

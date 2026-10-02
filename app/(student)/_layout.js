@@ -3,15 +3,15 @@ import { Tabs } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { View, ActivityIndicator } from 'react-native';
 
-import { COLORS } from '../../src/constants';
+import { useAppTheme } from '../../src/context/ThemeContext';
 import { useAuth } from '../../src/context/AuthContext';
 
 export default function StudentLayout() {
-  const { profile, loading } = useAuth();
+  const { user, loading } = useAuth();
+  const { colors, isDark } = useAppTheme();
+  const uid = user?.uid;
 
-  const uid = profile?.uid;
-
-  // 1. Loading state (prevents crash + hydration issues)
+  // 1. Loading state
   if (loading) {
     return (
       <View
@@ -19,15 +19,15 @@ export default function StudentLayout() {
           flex: 1,
           justifyContent: 'center',
           alignItems: 'center',
-          backgroundColor: COLORS.background,
+          backgroundColor: colors.background,
         }}
       >
-        <ActivityIndicator size="large" color={COLORS.primary} />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
-  // 2. Auth guard (prevents undefined uid crashes everywhere)
+  // 2. Auth guard
   if (!uid) {
     return (
       <View
@@ -35,10 +35,10 @@ export default function StudentLayout() {
           flex: 1,
           justifyContent: 'center',
           alignItems: 'center',
-          backgroundColor: COLORS.background,
+          backgroundColor: colors.background,
         }}
       >
-        <ActivityIndicator size="small" color={COLORS.primary} />
+        <ActivityIndicator size="small" color={colors.primary} />
       </View>
     );
   }
@@ -48,10 +48,22 @@ export default function StudentLayout() {
     <Tabs
       screenOptions={{
         headerShown: true,
-        tabBarActiveTintColor: COLORS.primary,
+        headerStyle: {
+          backgroundColor: colors.surface,
+        },
+        headerTitleStyle: {
+          color: colors.text,
+          fontWeight: '700',
+        },
+        headerTintColor: colors.primary,
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textSecondary,
         tabBarStyle: {
-          height: 60,
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+          height: 62,
           paddingBottom: 8,
+          paddingTop: 4,
         },
       }}
     >
@@ -78,7 +90,7 @@ export default function StudentLayout() {
       <Tabs.Screen
         name="notes"
         options={{
-          title: 'Notes',
+          title: 'Notes & Files',
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="notebook" size={size} color={color} />
           ),
@@ -105,11 +117,11 @@ export default function StudentLayout() {
         }}
       />
 
-      {/* Hidden routes (not visible in tab bar) */}
-      <Tabs.Screen name="face-register" options={{ href: null }} />
-      <Tabs.Screen name="join-class" options={{ href: null }} />
-      <Tabs.Screen name="question-bank" options={{ href: null }} />
-      <Tabs.Screen name="notifications" options={{ href: null }} />
+      {/* Hidden routes in tab bar */}
+      <Tabs.Screen name="face-register" options={{ href: null, title: 'Biometric Enrollment' }} />
+      <Tabs.Screen name="join-class" options={{ href: null, title: 'Join Classroom' }} />
+      <Tabs.Screen name="question-bank" options={{ href: null, title: 'Question Bank' }} />
+      <Tabs.Screen name="notifications" options={{ href: null, title: 'Notifications' }} />
     </Tabs>
   );
 }

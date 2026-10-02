@@ -1,79 +1,83 @@
 import { useState, useCallback } from 'react';
-import { ScrollView, StyleSheet, Alert } from 'react-native';
-import { Text, TextInput, Button, Card, Menu } from 'react-native-paper';
+import { ScrollView, StyleSheet, Alert, View } from 'react-native';
+import { Text, TextInput, Button, Card, Menu, Chip } from 'react-native-paper';
 import { useFocusEffect } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useAuth } from '../../src/context/AuthContext';
+import { useAppTheme } from '../../src/context/ThemeContext';
 import { getTeacherClassrooms } from '../../src/services/classroomService';
 import {
   createAttendanceSession,
   closeAttendanceSession,
   getActiveSession,
 } from '../../src/services/attendanceService';
-
-import { ATTENDANCE, COLORS } from '../../src/constants';
+import { ATTENDANCE, THEME_COLORS } from '../../src/constants';
 
 export default function AttendanceSessionScreen() {
   const { profile } = useAuth();
+  const { colors, isDark } = useAppTheme();
+  const uid = profile?.uid;
 
   const [classrooms, setClassrooms] = useState([]);
   const [selectedClass, setSelectedClass] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
 
   const [subject, setSubject] = useState('');
-  const [startTime, setStartTime] = useState('10:00');
-  const [endTime, setEndTime] = useState('10:10');
+  const [startTime, setStartTime] = useState('09:00');
+  const [endTime, setEndTime] = useState('18:00');
   const [radius, setRadius] = useState(String(ATTENDANCE.DEFAULT_RADIUS_METERS));
 
   const [menuVisible, setMenuVisible] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // ✅ SAFE LOAD (fixes your uid crash)
   useFocusEffect(
     useCallback(() => {
       const load = async () => {
-        if (!profile?.uid) return;
+        if (!uid) return;
 
         try {
-          const classes = await getTeacherClassrooms(profile.uid);
-          setClassrooms(classes || []);
+          const classes = await getTeacherClassrooms(uid);
+          const safeClasses = classes || [];
+          setClassrooms(safeClasses);
 
-          if (classes?.length > 0) {
-            const first = classes[0];
+          if (safeClasses.length > 0) {
+            const first = selectedClass || safeClasses[0];
             setSelectedClass(first);
-            setSubject(first.subject || '');
+            setSubject(first.subject || first.className || '');
 
             const session = await getActiveSession(first.classroomId);
             setActiveSession(session);
           }
         } catch (err) {
-          console.log(err);
-          Alert.alert('Error', 'Failed to load classrooms');
+          console.log('Load session error:', err);
         }
       };
 
       load();
-    }, [profile?.uid])
+    }, [uid, selectedClass])
   );
 
   const buildDateTime = (timeStr) => {
-    const [h, m] = timeStr.split(':').map(Number);
+    const parts = timeStr.split(':').map(Number);
+    const h = parts[0] || 9;
+    const m = parts[1] || 0;
     const d = new Date();
     d.setHours(h, m, 0, 0);
     return d;
   };
 
   const handleStart = async () => {
-    if (!profile?.uid) return Alert.alert('Error', 'User not loaded');
-    if (!selectedClass) return Alert.alert('Error', 'Select a classroom');
+    if (!uid) return Alert.alert('Error', 'User profile not loaded');
+    if (!selectedClass) return Alert.alert('Error', 'Please select a classroom');
 
     setLoading(true);
     try {
       const session = await createAttendanceSession(
-        profile.uid,
+        uid,
         selectedClass.classroomId,
         {
-          subject: subject || selectedClass.subject,
+          subject: subject || selectedClass.subject || selectedClass.className,
           startTime: buildDateTime(startTime),
           endTime: buildDateTime(endTime),
           radiusMeters: parseInt(radius, 10) || ATTENDANCE.DEFAULT_RADIUS_METERS,
@@ -81,9 +85,9 @@ export default function AttendanceSessionScreen() {
       );
 
       setActiveSession(session);
-      Alert.alert('Success', 'Attendance session started');
+      Alert.alert('Session Active 🚀', 'Attendance session is now live for students in this classroom.');
     } catch (error) {
-      Alert.alert('Error', error.message);
+      Alert.alert('Session Start Failed', error.message || 'Could not start session');
     } finally {
       setLoading(false);
     }
@@ -94,19 +98,23 @@ export default function AttendanceSessionScreen() {
       if (!activeSession) return;
       await closeAttendanceSession(activeSession.sessionId);
       setActiveSession(null);
-      Alert.alert('Closed', 'Session closed');
+      Alert.alert('Session Closed', 'The attendance session has been closed.');
     } catch (e) {
       Alert.alert('Error', e.message);
     }
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.scroll}>
-
-      {/* CLASS SELECT */}
-      <Card style={styles.card}>
+    <ScrollView style={[styles.container, { backgroundColor: colors.background }]} contentContainerStyle={styles.scroll}>
+      {/* 1. SELECT CLASSROOM */}
+      <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
         <Card.Content>
-          <Text variant="titleMedium">Select Classroom</Text>
+          <View style={styles.cardHeader}>
+            <MaterialCommunityIcons name="google-classroom" size={22} color={colors.primary} />
+            <Text variant="titleMedium" style={{ fontWeight: '700', color: colors.text }}>
+              Select Classroom
+            </Text>
+          </View>
 
           <Menu
             visible={menuVisible}
@@ -115,21 +123,23 @@ export default function AttendanceSessionScreen() {
               <Button
                 mode="outlined"
                 onPress={() => setMenuVisible(true)}
-                style={styles.select}
+                style={[styles.selectBtn, { borderColor: colors.border }]}
+                textColor={colors.text}
+                icon="chevron-down"
+                contentStyle={{ flexDirection: 'row-reverse' }}
               >
-                {selectedClass ? selectedClass.className : 'Select Classroom'}
+                {selectedClass ? `${selectedClass.className} (${selectedClass.classroomCode})` : 'Select Classroom'}
               </Button>
             }
           >
             {classrooms.map((cls) => (
               <Menu.Item
                 key={cls.classroomId}
-                title={cls.className}
+                title={`${cls.className} (${cls.classroomCode})`}
                 onPress={async () => {
                   setSelectedClass(cls);
-                  setSubject(cls.subject || '');
+                  setSubject(cls.subject || cls.className || '');
                   setMenuVisible(false);
-
                   const session = await getActiveSession(cls.classroomId);
                   setActiveSession(session);
                 }}
@@ -139,71 +149,107 @@ export default function AttendanceSessionScreen() {
         </Card.Content>
       </Card>
 
-      {/* ACTIVE SESSION */}
+      {/* 2. ACTIVE SESSION STATUS OR NEW SESSION FORM */}
       {activeSession ? (
-        <Card style={[styles.card, styles.activeCard]}>
+        <Card style={[styles.card, { backgroundColor: isDark ? '#1C2E24' : '#E6F4EA', borderColor: THEME_COLORS.success }]} mode="outlined">
           <Card.Content>
-            <Text variant="titleMedium" style={styles.activeText}>
-              Session Active
-            </Text>
+            <View style={styles.cardHeader}>
+              <MaterialCommunityIcons name="record-circle-outline" size={24} color={THEME_COLORS.success} />
+              <Text variant="titleMedium" style={{ color: THEME_COLORS.success, fontWeight: '800' }}>
+                Attendance Session Active
+              </Text>
+            </View>
 
-            <Text>Subject: {activeSession.subject}</Text>
-            <Text>Radius: {activeSession.radiusMeters}m</Text>
+            <View style={styles.sessionBox}>
+              <Text style={{ color: colors.text, fontSize: 15, fontWeight: '700' }}>
+                Subject: {activeSession.subject || 'General'}
+              </Text>
+              <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 4 }}>
+                Allowed GPS Geofence: {activeSession.radiusMeters || 50} meters radius
+              </Text>
+              <Chip icon="check-decagram" style={{ alignSelf: 'flex-start', marginTop: 10, backgroundColor: 'rgba(16, 185, 129, 0.2)' }} textStyle={{ color: THEME_COLORS.success, fontWeight: '700' }}>
+                LIVE & ACCESSIBLE
+              </Chip>
+            </View>
 
             <Button
               mode="contained"
-              buttonColor={COLORS.danger}
+              icon="stop-circle-outline"
+              buttonColor={THEME_COLORS.danger}
               onPress={handleClose}
-              style={styles.closeBtn}
+              style={{ marginTop: 16, borderRadius: 10 }}
             >
-              Close Session
+              End Session Now
             </Button>
           </Card.Content>
         </Card>
       ) : (
-        <Card style={styles.card}>
+        <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
           <Card.Content>
-            <Text variant="titleMedium">New Session</Text>
+            <View style={styles.cardHeader}>
+              <MaterialCommunityIcons name="calendar-clock" size={22} color={colors.primary} />
+              <Text variant="titleMedium" style={{ fontWeight: '700', color: colors.text }}>
+                Launch Attendance Session
+              </Text>
+            </View>
 
             <TextInput
-              label="Subject"
+              label="Subject / Course *"
               value={subject}
               onChangeText={setSubject}
               mode="outlined"
               style={styles.input}
+              outlineColor={colors.border}
+              activeOutlineColor={colors.primary}
+              textColor={colors.text}
             />
 
-            <TextInput
-              label="Start Time"
-              value={startTime}
-              onChangeText={setStartTime}
-              mode="outlined"
-              style={styles.input}
-            />
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TextInput
+                label="Start Time (HH:MM)"
+                value={startTime}
+                onChangeText={setStartTime}
+                mode="outlined"
+                style={[styles.input, { flex: 1 }]}
+                outlineColor={colors.border}
+                activeOutlineColor={colors.primary}
+                textColor={colors.text}
+              />
+              <TextInput
+                label="End Time (HH:MM)"
+                value={endTime}
+                onChangeText={setEndTime}
+                mode="outlined"
+                style={[styles.input, { flex: 1 }]}
+                outlineColor={colors.border}
+                activeOutlineColor={colors.primary}
+                textColor={colors.text}
+              />
+            </View>
 
             <TextInput
-              label="End Time"
-              value={endTime}
-              onChangeText={setEndTime}
-              mode="outlined"
-              style={styles.input}
-            />
-
-            <TextInput
-              label="Radius (meters)"
+              label="Geofence Radius (meters)"
               value={radius}
               onChangeText={setRadius}
               keyboardType="numeric"
               mode="outlined"
               style={styles.input}
+              outlineColor={colors.border}
+              activeOutlineColor={colors.primary}
+              textColor={colors.text}
             />
 
             <Button
               mode="contained"
+              icon="play-circle-outline"
               onPress={handleStart}
               loading={loading}
+              disabled={loading}
+              buttonColor={colors.primary}
+              style={{ borderRadius: 10, marginTop: 4 }}
+              contentStyle={{ paddingVertical: 6 }}
             >
-              Start Attendance Session
+              Start Live Attendance Session
             </Button>
           </Card.Content>
         </Card>
@@ -213,12 +259,11 @@ export default function AttendanceSessionScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.background },
-  scroll: { padding: 16 },
-  card: { marginBottom: 12, borderRadius: 12 },
-  select: { marginTop: 12 },
+  container: { flex: 1 },
+  scroll: { padding: 16, paddingBottom: 40 },
+  card: { marginBottom: 16, borderRadius: 16, borderWidth: 1 },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  selectBtn: { borderRadius: 10 },
   input: { marginBottom: 12 },
-  activeCard: { backgroundColor: '#def7ec' },
-  activeText: { color: COLORS.success, fontWeight: '700' },
-  closeBtn: { marginTop: 12 },
+  sessionBox: { marginTop: 8 },
 });

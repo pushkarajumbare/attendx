@@ -1,45 +1,24 @@
 import { useState, useCallback } from 'react';
-import {
-  View,
-  StyleSheet,
-  ScrollView,
-  RefreshControl,
-  ActivityIndicator,
-} from 'react-native';
-import {
-  Text,
-  Button,
-  Card,
-  Chip,
-  FAB,
-} from 'react-native-paper';
-import {
-  useRouter,
-  useFocusEffect,
-} from 'expo-router';
+import { View, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { Text, Button, Card, Chip, FAB } from 'react-native-paper';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+
 import { useAuth } from '../../src/context/AuthContext';
-
-import {
-  getStudentClassrooms,
-} from '../../src/services/classroomService';
-
-import {
-  getAttendanceStats,
-} from '../../src/services/attendanceService';
-
+import { useAppTheme } from '../../src/context/ThemeContext';
+import { getStudentClassrooms } from '../../src/services/classroomService';
+import { getAttendanceStats } from '../../src/services/attendanceService';
 import { StatCard } from '../../src/components/StatCard';
-import { EmptyState } from '../../src/components/EmptyState';
 import { calculateAttendancePercentage } from '../../src/utils/helpers';
-import { COLORS } from '../../src/constants';
+import { THEME_COLORS } from '../../src/constants';
 
 export default function StudentDashboard() {
   const router = useRouter();
-  const { profile } = useAuth();
-
-  const uid = profile?.uid;
+  const { user, profile } = useAuth();
+  const { colors, isDark } = useAppTheme();
+  const uid = user?.uid;
 
   const [classrooms, setClassrooms] = useState([]);
-
   const [stats, setStats] = useState({
     present: 0,
     total: 0,
@@ -50,9 +29,6 @@ export default function StudentDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // =========================
-  // SAFE DATA LOADER
-  // =========================
   const loadData = useCallback(async () => {
     if (!uid) {
       setLoading(false);
@@ -62,43 +38,35 @@ export default function StudentDashboard() {
     try {
       setError(null);
       const classes = await getStudentClassrooms(uid);
-      setClassrooms(classes || []);
+      const safeClasses = classes || [];
+      setClassrooms(safeClasses);
 
       let totalPresent = 0;
       let totalSessions = 0;
 
-      const safeClasses = classes || [];
-
       for (const cls of safeClasses) {
         try {
           const s = await getAttendanceStats(uid, cls.classroomId);
-
           totalPresent += s?.present || 0;
           totalSessions += s?.total || 0;
-        } catch (error) {
-          console.log('Attendance stats error:', error);
+        } catch (err) {
+          console.log('Attendance stats notice:', err?.message);
         }
       }
 
       setStats({
         present: totalPresent,
         total: totalSessions,
-        percentage: calculateAttendancePercentage(
-          totalPresent,
-          totalSessions
-        ),
+        percentage: calculateAttendancePercentage(totalPresent, totalSessions),
       });
-    } catch (error) {
-      console.log('Dashboard load error:', error);
-      setError(error.message);
+    } catch (err) {
+      console.log('Student dashboard load error:', err);
+      setError(err.message || 'Failed to load dashboard');
     } finally {
       setLoading(false);
     }
   }, [uid]);
 
-  // =========================
-  // FOCUS EFFECT
-  // =========================
   useFocusEffect(
     useCallback(() => {
       loadData();
@@ -111,124 +79,182 @@ export default function StudentDashboard() {
     setRefreshing(false);
   }, [loadData]);
 
-  // Loading state
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.loadingText}>Loading your dashboard...</Text>
+      <View style={[styles.centerContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading student dashboard...</Text>
       </View>
     );
   }
 
-  // Error state
   if (error) {
     return (
-      <View style={styles.centerContainer}>
-        <Text variant="titleMedium" style={styles.errorText}>Something went wrong</Text>
-        <Text style={styles.errorSubtext}>{error}</Text>
-        <Button mode="contained" onPress={loadData} style={styles.retryBtn}>
+      <View style={[styles.centerContainer, { backgroundColor: colors.background }]}>
+        <MaterialCommunityIcons name="alert-circle-outline" size={48} color={THEME_COLORS.danger} />
+        <Text variant="titleMedium" style={[styles.errorText, { color: THEME_COLORS.danger }]}>Something went wrong</Text>
+        <Text style={[styles.errorSubtext, { color: colors.textSecondary }]}>{error}</Text>
+        <Button mode="contained" onPress={loadData} style={styles.retryBtn} buttonColor={colors.primary}>
           Retry
         </Button>
       </View>
     );
   }
 
-  // Not logged in
   if (!uid) {
     return (
-      <View style={styles.centerContainer}>
-        <Text variant="titleMedium">Please log in</Text>
+      <View style={[styles.centerContainer, { backgroundColor: colors.background }]}>
+        <Text variant="titleMedium" style={{ color: colors.text }}>Please log in</Text>
       </View>
     );
   }
 
+  const studentName = profile?.name ? profile.name.split(' ')[0] : 'Student';
+  const isFaceRegistered = profile?.faceRegistered === true;
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
         contentContainerStyle={styles.scroll}
       >
-        <Text variant="headlineSmall" style={styles.greeting}>
-          Hello, {profile?.name?.split(' ')[0] || 'Student'}
-        </Text>
+        {/* 1. WELCOME HEADER */}
+        <View style={styles.welcomeRow}>
+          <View style={styles.welcomeTextGroup}>
+            <Text variant="headlineSmall" style={[styles.greeting, { color: colors.text }]}>
+              Hello, {studentName} 👋
+            </Text>
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+              Your attendance & classroom overview
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.profileBadge, { backgroundColor: isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight }]}
+            onPress={() => router.push('/(student)/profile')}
+          >
+            <MaterialCommunityIcons name="account-school" size={24} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
 
-        <Text style={styles.subtitle}>
-          Your attendance overview
-        </Text>
+        {/* 2. BIOMETRIC REGISTRATION CALLOUT IF NOT REGISTERED */}
+        {!isFaceRegistered && (
+          <Card style={[styles.alertCard, { backgroundColor: isDark ? '#2A1A10' : '#FFF7ED', borderColor: colors.primary }]} mode="outlined">
+            <Card.Content style={styles.alertCardContent}>
+              <MaterialCommunityIcons name="face-recognition" size={32} color={colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.alertTitle, { color: colors.text }]}>Face Registration Required</Text>
+                <Text style={[styles.alertDesc, { color: colors.textSecondary }]}>
+                  Enroll your 5-stage biometric template to enable instant face attendance check-ins.
+                </Text>
+              </View>
+              <Button
+                mode="contained"
+                buttonColor={colors.primary}
+                compact
+                onPress={() => router.push('/(student)/face-register')}
+              >
+                Register
+              </Button>
+            </Card.Content>
+          </Card>
+        )}
 
+        {/* 3. STATS CARDS */}
         <View style={styles.statsRow}>
           <StatCard
-            title="Attendance %"
+            title="Attendance"
             value={`${stats.percentage}%`}
             icon="percent"
+            color={stats.percentage >= 75 ? THEME_COLORS.success : THEME_COLORS.warning}
           />
-
           <StatCard
-            title="Present"
-            value={stats.present}
+            title="Present Sessions"
+            value={`${stats.present} / ${stats.total}`}
             icon="check-circle"
-            color={COLORS.success}
+            color={colors.primary}
           />
         </View>
 
+        {/* 4. ACTIONS */}
         <View style={styles.actions}>
           <Button
             mode="contained"
-            icon="qrcode"
+            icon="plus"
             onPress={() => router.push('/(student)/join-class')}
+            buttonColor={colors.primary}
+            style={{ borderRadius: 12 }}
           >
-            Join Classroom
-          </Button>
-
-          <Button
-            mode="outlined"
-            icon="bell"
-            onPress={() => router.push('/(student)/notifications')}
-          >
-            Notifications
+            Join Classroom with Code
           </Button>
         </View>
 
-        <Text variant="titleMedium" style={styles.sectionTitle}>
-          My Classrooms
+        {/* 5. CLASSROOMS */}
+        <Text variant="titleMedium" style={[styles.sectionTitle, { color: colors.text }]}>
+          Enrolled Classrooms ({classrooms.length})
         </Text>
 
-        {classrooms && classrooms.length === 0 ? (
-          <Card style={styles.emptyCard}>
-            <Card.Content>
-              <Text variant="titleMedium" style={styles.emptyTitle}>No classrooms yet</Text>
-              <Text style={styles.emptyText}>Join a classroom using the code shared by your teacher</Text>
-              <Button mode="contained" onPress={() => router.push('/(student)/join-class')} style={styles.emptyBtn}>
+        {classrooms.length === 0 ? (
+          <Card style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
+            <Card.Content style={{ alignItems: 'center', paddingVertical: 20 }}>
+              <MaterialCommunityIcons name="google-classroom" size={44} color={colors.primary} style={{ opacity: 0.8 }} />
+              <Text variant="titleMedium" style={[styles.emptyTitle, { color: colors.text }]}>No Classrooms Yet</Text>
+              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+                Ask your teacher for their 6-character classroom code and tap Join Classroom.
+              </Text>
+              <Button
+                mode="contained"
+                icon="plus"
+                onPress={() => router.push('/(student)/join-class')}
+                style={styles.emptyBtn}
+                buttonColor={colors.primary}
+              >
                 Join Classroom
               </Button>
             </Card.Content>
           </Card>
         ) : (
           classrooms.map((cls) => (
-            <Card key={cls.classroomId} style={styles.card}>
+            <Card
+              key={cls.classroomId}
+              style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              mode="outlined"
+            >
               <Card.Content>
-                <Text variant="titleMedium">{cls.className}</Text>
-
-                <Text style={styles.subject}>{cls.subject}</Text>
-
-                <Chip style={styles.chip}>
-                  {cls.classroomCode}
-                </Chip>
+                <View style={styles.cardHeaderRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="titleMedium" style={[styles.className, { color: colors.text }]}>
+                      {cls.className}
+                    </Text>
+                    <Text style={[styles.subject, { color: colors.textSecondary }]}>
+                      {cls.subject || 'General'}
+                    </Text>
+                  </View>
+                  <Chip
+                    style={{ backgroundColor: isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight }}
+                    textStyle={{ color: colors.primary, fontWeight: '700', fontSize: 11 }}
+                  >
+                    {cls.classroomCode}
+                  </Chip>
+                </View>
               </Card.Content>
 
-              <Card.Actions>
-                <Button onPress={() => router.push('/(student)/attendance')}>
-                  Mark Attendance
+              <Card.Actions style={styles.cardActions}>
+                <Button
+                  mode="text"
+                  icon="file-document-outline"
+                  textColor={colors.primary}
+                  onPress={() => router.push('/(student)/notes')}
+                >
+                  Notes & Files
                 </Button>
-
-                <Button onPress={() => router.push('/(student)/question-bank')}>
-                  Question Bank
+                <Button
+                  mode="contained-tonal"
+                  icon="face-recognition"
+                  buttonColor={isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight}
+                  textColor={colors.primaryDark}
+                  onPress={() => router.push('/(student)/attendance')}
+                >
+                  Mark Attendance
                 </Button>
               </Card.Actions>
             </Card>
@@ -236,10 +262,12 @@ export default function StudentDashboard() {
         )}
       </ScrollView>
 
+      {/* FLOATING MARK ATTENDANCE BUTTON */}
       <FAB
         icon="camera"
-        style={styles.fab}
-        label="Mark Attendance"
+        style={[styles.fab, { backgroundColor: colors.primary }]}
+        label="Scan Face"
+        color="#FFFFFF"
         onPress={() => router.push('/(student)/attendance')}
       />
     </View>
@@ -247,89 +275,97 @@ export default function StudentDashboard() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  scroll: {
-    padding: 16,
-    paddingBottom: 100,
-  },
-  centerContainer: { 
-    flex: 1, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    backgroundColor: COLORS.background 
-  },
-  loadingText: { 
-    marginTop: 12, 
-    color: COLORS.textSecondary 
-  },
-  errorText: { 
-    color: COLORS.danger, 
-    fontWeight: '600' 
-  },
-  errorSubtext: { 
-    marginTop: 8, 
-    color: COLORS.textSecondary, 
-    textAlign: 'center' 
-  },
-  retryBtn: { 
-    marginTop: 16 
-  },
-  greeting: {
-    fontWeight: '700',
-  },
-  subtitle: {
-    color: COLORS.textSecondary,
+  container: { flex: 1 },
+  scroll: { padding: 16, paddingBottom: 110 },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  loadingText: { marginTop: 12, fontSize: 14 },
+  errorText: { fontWeight: '700', fontSize: 16, marginTop: 12 },
+  errorSubtext: { marginTop: 6, textAlign: 'center', fontSize: 13, marginBottom: 14 },
+  retryBtn: { borderRadius: 10 },
+
+  welcomeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 16,
   },
+  welcomeTextGroup: { flex: 1 },
+  greeting: { fontWeight: '800', letterSpacing: -0.5 },
+  subtitle: { fontSize: 13, marginTop: 2 },
+  profileBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+
+  alertCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  alertCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  alertTitle: {
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  alertDesc: {
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+
   statsRow: {
     flexDirection: 'row',
-    marginHorizontal: -6,
+    gap: 12,
+    marginBottom: 16,
   },
   actions: {
-    gap: 8,
-    marginVertical: 16,
+    marginBottom: 20,
   },
   sectionTitle: {
-    fontWeight: '600',
+    fontWeight: '700',
+    fontSize: 17,
     marginBottom: 12,
   },
   card: {
     marginBottom: 12,
-    borderRadius: 12,
-  },
-  emptyCard: {
-    marginBottom: 12,
-    borderRadius: 12,
-    borderColor: COLORS.border,
+    borderRadius: 16,
     borderWidth: 1,
   },
-  emptyTitle: { 
-    textAlign: 'center', 
-    fontWeight: '600' 
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
   },
-  emptyText: { 
-    textAlign: 'center', 
-    color: COLORS.textSecondary, 
-    marginVertical: 8 
+  className: { fontWeight: '700', fontSize: 16 },
+  subject: { fontSize: 13, marginTop: 2 },
+  cardActions: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(0,0,0,0.06)',
+    paddingHorizontal: 12,
+    paddingBottom: 6,
   },
-  emptyBtn: { 
-    marginTop: 12 
+
+  emptyCard: {
+    borderRadius: 16,
+    borderWidth: 1,
   },
-  subject: {
-    color: COLORS.textSecondary,
-    marginTop: 4,
-  },
-  chip: {
-    alignSelf: 'flex-start',
-    marginTop: 8,
-  },
+  emptyTitle: { fontWeight: '700', marginTop: 10 },
+  emptyText: { textAlign: 'center', marginVertical: 8, fontSize: 13, lineHeight: 18, paddingHorizontal: 16 },
+  emptyBtn: { marginTop: 10, borderRadius: 10 },
+
   fab: {
     position: 'absolute',
-    right: 16,
-    bottom: 16,
-    backgroundColor: COLORS.primary,
+    right: 20,
+    bottom: 24,
+    borderRadius: 16,
+    elevation: 4,
   },
 });

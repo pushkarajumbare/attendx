@@ -1,3 +1,11 @@
+/**
+ * Notification Service — AttendX
+ *
+ * Handles Expo push notifications registration and scheduling.
+ * Designed to be resilient: any failure is logged and swallowed so it
+ * never crashes the authentication / startup flow.
+ */
+
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
@@ -15,82 +23,76 @@ Notifications.setNotificationHandler({
 
 export async function registerForPushNotifications(userId) {
   try {
-    // Disable push notifications on web
+    // Skip on web — Expo push tokens are for native only
     if (Platform.OS === 'web') {
-      console.log('Push notifications skipped on web');
       return null;
     }
 
-    // Must be real device for push notifications
+    // Expo push tokens require a physical device
     if (!Device.isDevice) {
-      console.log('Push notifications require physical device');
+      console.log('[Notifications] Skipped — not a physical device');
       return null;
     }
 
-    const { status: existing } =
-      await Notifications.getPermissionsAsync();
+    // Check / request permission
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
 
-    let finalStatus = existing;
-
-    if (existing !== 'granted') {
-      const { status } =
-        await Notifications.requestPermissionsAsync();
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
       finalStatus = status;
     }
 
     if (finalStatus !== 'granted') {
-      console.log('Notification permission denied');
+      console.log('[Notifications] Permission denied');
       return null;
     }
 
-    const token = (
-      await Notifications.getExpoPushTokenAsync({
-        projectId: process.env.EXPO_PUBLIC_EAS_PROJECT_ID,
-      })
-    ).data;
-
-    // Android notification channel
-    if (Platform.OS === 'android') {
-      await Notifications.setNotificationChannelAsync(
-        'default',
-        {
-          name: 'AttendX Notifications',
-          importance:
-            Notifications.AndroidImportance.MAX,
-        }
+    // Guard: EAS project ID must be present to get a push token
+    const easProjectId = process.env.EXPO_PUBLIC_EAS_PROJECT_ID;
+    if (!easProjectId) {
+      console.warn(
+        '[Notifications] EXPO_PUBLIC_EAS_PROJECT_ID is not set in .env — ' +
+        'skipping push token registration.'
       );
+      return null;
     }
 
-    // Save token to Firestore
-    if (userId) {
+    const tokenData = await Notifications.getExpoPushTokenAsync({
+      projectId: easProjectId,
+    });
+    const token = tokenData.data;
+
+    // Create Android notification channel
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'AttendX Notifications',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#4F46E5',
+      });
+    }
+
+    // Persist token to Firestore for server-side push delivery
+    if (userId && token) {
       await setDoc(
         doc(db, COLLECTIONS.USERS, userId),
-        { pushToken: token },
+        { pushToken: token, pushTokenUpdatedAt: new Date().toISOString() },
         { merge: true }
       );
     }
 
     return token;
   } catch (error) {
-    console.log(
-      'Notification registration error:',
-      error
-    );
+    // Never crash the app over a notification failure
+    console.warn('[Notifications] Registration failed (non-fatal):', error?.message || error);
     return null;
   }
 }
 
-export function scheduleAttendanceReminder(
-  title,
-  body,
-  triggerDate
-) {
+export function scheduleAttendanceReminder(title, body, triggerDate) {
   return Notifications.scheduleNotificationAsync({
-    content: {
-      title,
-      body,
-      sound: true,
-    },
+    content: { title, body, sound: true },
     trigger: triggerDate,
   });
 }

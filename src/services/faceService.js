@@ -1,186 +1,422 @@
+
+/**
+ * AttendX on-device face template persistence and verification.
+ *
+ * Camera frames are processed locally by tensorflowService. Firestore stores only
+ * the normalized numeric template, never raw/base64 face photos.
+ */
+
 import {
   doc,
-  setDoc,
+  writeBatch,
   getDoc,
   serverTimestamp,
 } from 'firebase/firestore';
 
 import { db } from '../config/firebase';
-import { COLLECTIONS } from '../constants';
+import { ATTENDANCE, COLLECTIONS } from '../constants';
+import {
+  EMBEDDING_DIMENSION,
+  MODEL_VERSION,
+  computeAverageEmbedding,
+  compareEmbeddings,
+  normalizeEmbedding,
+} from './tensorflowService';
 
-// ===============================
-// FACE ANGLES REQUIRED (MASTER DEFINITION)
-// ===============================
 export const FACE_ANGLES = [
   {
     id: 'front',
-    label: 'Front Face',
-    instruction: 'Look Straight',
+    label: 'Front',
+    instruction: 'Look straight at the camera',
+    hint: 'Keep your face level and eyes open',
+    icon: 'face-recognition',
   },
   {
     id: 'left',
-    label: 'Left Face',
-    instruction: 'Turn Left',
+    label: 'Left',
+    instruction: 'Turn your head slightly to the left',
+    hint: 'Keep your face inside the guide',
+    icon: 'arrow-left',
   },
   {
     id: 'right',
-    label: 'Right Face',
-    instruction: 'Turn Right',
-  },
-  {
-    id: 'up',
-    label: 'Look Up',
-    instruction: 'Move Face Up',
-  },
-  {
-    id: 'blink',
-    label: 'Blink Eyes',
-    instruction: 'Blink Your Eyes',
+    label: 'Right',
+    instruction: 'Turn your head slightly to the right',
+    hint: 'Keep your face inside the guide',
+    icon: 'arrow-right',
   },
 ];
 
-// ===============================
-// EMBEDDING COMPARISON (VECTOR CALCULATIONS)
-// ===============================
-function euclideanDistance(a, b) {
-  if (!a?.length || !b?.length) {
-    return 999;
-  }
+async function executeWithRetry(operation, retries = 3, delay = 800) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt === retries) throw error;
 
-  let sum = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    const diff = (a[i] || 0) - (b[i] || 0);
-    sum += diff * diff;
-  }
+      const backoff = delay * Math.pow(2, attempt - 1);
 
-  return Math.sqrt(sum);
+      console.log(
+        `Firestore operation retry ${attempt}/${retries} after ${backoff}ms:`,
+        error?.message
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
 }
 
-function compareEmbeddings(embedding1, embedding2) {
-  const distance = euclideanDistance(embedding1, embedding2);
-  
-  // Maps a standard Euclidean face vector distance threshold back to a 0-100 score scale cleanly
-  const similarity = Math.max(0, 100 - distance * 100);
-  return similarity;
+function coerceThreshold(value) {
+  const numeric = Number(value);
+
+  if (!Number.isFinite(numeric)) {
+    return ATTENDANCE.FACE_MATCH_THRESHOLD;
+  }
+
+  return numeric <= 1 ? Math.round(numeric * 100) : numeric;
 }
 
-// ===============================
-// REGISTER FACE SAMPLES
-// ===============================
+function sanitizeEmbedding(value) {
+  if (!Array.isArray(value) || value.length !== EMBEDDING_DIMENSION) {
+    return [];
+  }
+
+  if (!value.every((entry) => Number.isFinite(Number(entry)))) {
+    return [];
+  }
+
+  return normalizeEmbedding(value.map(Number));
+}
+
+/**
+ * Register exactly 3 face samples:
+ * Front → Left → Right
+ *
+ * Firestore does NOT allow nested arrays, so the individual embeddings
+ * are stored as named fields instead of:
+ *
+ * samples: [
+ *   [...],
+ *   [...],
+ *   [...]
+ * ]
+ *
+ * New structure:
+ *
+ * samples: {
+ *   front: [...],
+ *   left: [...],
+ *   right: [...]
+ * }
+ */
 export async function registerFaceSamples(studentId, faceData) {
   try {
     if (!studentId) {
-      throw new Error('Student ID missing');
+      throw new Error('Face registration error: Student ID context missing.');
     }
 
-    if (!faceData || !faceData.length) {
-      throw new Error('Face data missing');
+    if (!Array.isArray(faceData) || faceData.length !== FACE_ANGLES.length) {
+      throw new Error(
+        'Capture front, left, and right face samples before saving.'
+      );
     }
 
-    // Filter array profiles containing legitimate generated mathematical tensor weights
-    const validSamples = faceData.filter((sample) => sample?.embedding);
+    const embeddings = [];
+    const sampleAngles = [];
 
-    // Dynamic assertion: requires at least 4 out of the 5 requested state targets to be saved
-    if (validSamples.length < 4) {
-      throw new Error(`Not enough face samples captured. Required: >=4, Received: ${validSamples.length}`);
+    for (const requiredStage of FACE_ANGLES) {
+      const sample = faceData.find(
+        (entry) => entry?.angle === requiredStage.id
+      );
+
+      const embedding = sanitizeEmbedding(sample?.embedding);
+
+      if (embedding.length !== EMBEDDING_DIMENSION) {
+        throw new Error(
+          `The ${requiredStage.label.toLowerCase()} capture was invalid. Please retake registration.`
+        );
+      }
+
+      embeddings.push(embedding);
+      sampleAngles.push(requiredStage.id);
     }
 
-    // 1. Commit multi-angle tracking map profiles to FACE_DATA storage
-    await setDoc(
-      doc(db, COLLECTIONS.FACE_DATA, studentId),
-      {
+    // embeddings[0] = Front
+    // embeddings[1] = Left
+    // embeddings[2] = Right
+    const templateEmbedding = computeAverageEmbedding(embeddings);
+
+    if (templateEmbedding.length !== EMBEDDING_DIMENSION) {
+      throw new Error(
+        'Could not create a stable face template. Please try again in better lighting.'
+      );
+    }
+
+    const threshold = coerceThreshold(
+      ATTENDANCE.FACE_MATCH_THRESHOLD
+    );
+
+    const faceDataRef = doc(
+      db,
+      COLLECTIONS.FACE_DATA,
+      studentId
+    );
+
+    const studentRef = doc(
+      db,
+      COLLECTIONS.STUDENTS,
+      studentId
+    );
+
+    const userRef = doc(
+      db,
+      COLLECTIONS.USERS,
+      studentId
+    );
+
+    await executeWithRetry(async () => {
+      const batch = writeBatch(db);
+
+      batch.set(faceDataRef, {
         studentId,
-        samples: validSamples,
-        totalSamples: validSamples.length,
+
+        template: {
+          // Average of Front + Left + Right
+          embedding: templateEmbedding,
+
+          // IMPORTANT:
+          // Firestore-safe object containing 3 flat arrays.
+          // No nested array is written.
+          samples: {
+            front: embeddings[0],
+            left: embeddings[1],
+            right: embeddings[2],
+          },
+
+          dimension: EMBEDDING_DIMENSION,
+          sampleCount: embeddings.length,
+          sampleAngles,
+          modelVersion: MODEL_VERSION,
+          matchThreshold: threshold,
+        },
+
         faceRegistered: true,
+        modelVersion: MODEL_VERSION,
         registeredAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      }
-    );
+      });
 
-    // 2. Sync confirmation flags directly into global access profiles across core collections
-    await setDoc(
-      doc(db, COLLECTIONS.STUDENTS, studentId),
-      { faceRegistered: true },
-      { merge: true }
-    );
+      batch.set(
+        studentRef,
+        {
+          faceRegistered: true,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
 
-    await setDoc(
-      doc(db, COLLECTIONS.USERS, studentId),
-      { faceRegistered: true },
-      { merge: true }
-    );
+      batch.set(
+        userRef,
+        {
+          faceRegistered: true,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      await batch.commit();
+    });
 
     return true;
   } catch (error) {
-    console.log('Register Face Error:', error);
-    throw error;
+    console.error(
+      '[FaceService] registerFaceSamples error:',
+      error
+    );
+
+    throw new Error(
+      error?.message || 'Face template synchronization failed.'
+    );
   }
 }
 
-// ===============================
-// VERIFY FACE
-// ===============================
+/**
+ * Legacy/helper registration function.
+ *
+ * It creates the required 3-stage structure using the same normalized
+ * embedding for each stage.
+ */
+export async function registerFaceEmbedding(studentId, embedding) {
+  const normalized = sanitizeEmbedding(embedding);
+
+  if (normalized.length !== EMBEDDING_DIMENSION) {
+    throw new Error(
+      'Invalid face embedding. Please use guided face registration.'
+    );
+  }
+
+  return registerFaceSamples(
+    studentId,
+    FACE_ANGLES.map((stage) => ({
+      angle: stage.id,
+      embedding: normalized,
+    }))
+  );
+}
+
 export async function verifyFace(studentId, capturedFace) {
   try {
-    if (!capturedFace?.embedding) {
+    if (!studentId) {
       return {
         verified: false,
         confidence: 0,
-        liveness: 0,
-        reason: 'Face not detected',
+        livenessPassed: false,
+        reason: 'Student ID missing from verification request',
       };
     }
 
-    const faceDoc = await getDoc(doc(db, COLLECTIONS.FACE_DATA, studentId));
-
-    if (!faceDoc.exists()) {
+    if (!capturedFace?.livenessPassed) {
       return {
         verified: false,
         confidence: 0,
-        liveness: 0,
-        reason: 'Face not registered',
+        livenessPassed: false,
+        reason:
+          capturedFace?.livenessReason ||
+          'Liveness challenge failed. Please position your face as prompted.',
       };
     }
 
-    const savedData = faceDoc.data();
-    const savedSamples = savedData?.samples || [];
+    const liveEmbedding = sanitizeEmbedding(
+      capturedFace.embedding
+    );
 
-    if (!savedSamples.length) {
+    if (liveEmbedding.length !== EMBEDDING_DIMENSION) {
       return {
         verified: false,
         confidence: 0,
-        liveness: 0,
-        reason: 'No face data found in database profile',
+        livenessPassed: true,
+        reason: 'No valid live face embedding was captured',
       };
     }
 
-    let bestScore = 0;
+    const docSnap = await executeWithRetry(() =>
+      getDoc(
+        doc(
+          db,
+          COLLECTIONS.FACE_DATA,
+          studentId
+        )
+      )
+    );
 
-    // Cross-verify matching accuracy metrics against all registered head positions
-    for (const sample of savedSamples) {
-      const score = compareEmbeddings(sample.embedding, capturedFace.embedding);
-      if (score > bestScore) {
-        bestScore = score;
+    if (!docSnap.exists()) {
+      return {
+        verified: false,
+        confidence: 0,
+        livenessPassed: true,
+        reason:
+          'No registered face record found. Please register your face first.',
+      };
+    }
+
+    const faceData = docSnap.data();
+
+    const templateEmbedding = sanitizeEmbedding(
+      faceData?.template?.embedding ||
+        faceData?.embedding
+    );
+
+    if (templateEmbedding.length !== EMBEDDING_DIMENSION) {
+      return {
+        verified: false,
+        confidence: 0,
+        livenessPassed: true,
+        reason:
+          'Registered face template is invalid. Please re-register your face.',
+      };
+    }
+
+    // First compare against the averaged face template.
+    let confidence = compareEmbeddings(
+      templateEmbedding,
+      liveEmbedding
+    );
+
+    /**
+     * Also compare against individual registered samples.
+     *
+     * New Firestore format:
+     *
+     * samples: {
+     *   front: [...],
+     *   left: [...],
+     *   right: [...]
+     * }
+     *
+     * Object.values() converts this into:
+     *
+     * [
+     *   [...front...],
+     *   [...left...],
+     *   [...right...]
+     * ]
+     *
+     * Each individual item is still a flat embedding.
+     */
+    const storedSamplesObject =
+      faceData?.template?.samples || {};
+
+    const storedSamples = Object.values(
+      storedSamplesObject
+    )
+      .map(sanitizeEmbedding)
+      .filter(
+        (sample) =>
+          sample.length === EMBEDDING_DIMENSION
+      );
+
+    for (const sampleEmb of storedSamples) {
+      const score = compareEmbeddings(
+        sampleEmb,
+        liveEmbedding
+      );
+
+      if (score > confidence) {
+        confidence = score;
       }
     }
 
-    // Standard threshold configuration: 75% match quality criteria required to mark attendance
-    const verified = bestScore >= 75;
+    const threshold = coerceThreshold(
+      faceData?.template?.matchThreshold
+    );
+
+    const verified = confidence >= threshold;
 
     return {
       verified,
-      confidence: Math.round(bestScore),
-      liveness: capturedFace?.blinked ? 100 : 80,
-      reason: verified ? 'Face verified' : 'Face mismatch',
+      confidence,
+      livenessPassed: true,
+      threshold,
+      similarity: Number(
+        (confidence / 100).toFixed(4)
+      ),
+      reason: verified
+        ? 'Face identity matched'
+        : `Face mismatch (${confidence}% similarity, threshold ${threshold}%)`,
     };
   } catch (error) {
-    console.log('Verify Error:', error);
+    console.error(
+      '[FaceService] verifyFace error:',
+      error
+    );
+
     return {
       verified: false,
       confidence: 0,
-      liveness: 0,
-      reason: 'Verification fallback pipeline failed',
+      livenessPassed: false,
+      reason:
+        'Face verification error: ' +
+        (error?.message || 'Database error'),
     };
   }
 }

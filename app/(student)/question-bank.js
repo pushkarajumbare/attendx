@@ -1,106 +1,68 @@
 import { useState, useCallback } from 'react';
-import { ScrollView, StyleSheet, Linking, Alert, View } from 'react-native';
-import { Text, Card, Button, Menu, ActivityIndicator } from 'react-native-paper';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import { Text, Card, Button, Menu, ActivityIndicator, Chip } from 'react-native-paper';
 import { useFocusEffect } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useAuth } from '../../src/context/AuthContext';
+import { useAppTheme } from '../../src/context/ThemeContext';
 import { getStudentClassrooms } from '../../src/services/classroomService';
-import { getQuestionBank } from '../../src/services/contentService';
+import { getQuestionBank, openOrDownloadFile } from '../../src/services/contentService';
 import { EmptyState } from '../../src/components/EmptyState';
-import { COLORS } from '../../src/constants';
+import { formatDate } from '../../src/utils/helpers';
+import { THEME_COLORS } from '../../src/constants';
 
 export default function StudentQuestionBankScreen() {
   const { profile } = useAuth();
+  const { colors, isDark } = useAppTheme();
+  const uid = profile?.uid;
 
   const [classrooms, setClassrooms] = useState([]);
   const [selectedClass, setSelectedClass] = useState(null);
   const [items, setItems] = useState([]);
   const [menuVisible, setMenuVisible] = useState(false);
 
-  // =========================
-  // MANDATORY GLOBAL GUARD
-  // =========================
-  const uid = profile?.uid;
-
-  if (!uid) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-      </View>
-    );
-  }
-
-  // =========================
-  // DATA LOADING
-  // =========================
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    if (!uid) return;
     try {
       const classes = await getStudentClassrooms(uid);
+      const safeClasses = classes || [];
+      setClassrooms(safeClasses);
 
-      setClassrooms(classes || []);
-
-      const cls = selectedClass || classes?.[0];
-
+      const cls = selectedClass || safeClasses[0];
       if (cls) {
         setSelectedClass(cls);
-
         const data = await getQuestionBank(cls.classroomId);
         setItems(data || []);
-      } else {
-        setItems([]);
       }
     } catch (error) {
       console.log('Question bank error:', error);
-      Alert.alert('Error', 'Failed to load question papers');
     }
-  };
+  }, [uid, selectedClass]);
 
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [uid, selectedClass])
+    }, [loadData])
   );
 
-  // =========================
-  // HANDLERS
-  // =========================
   const handleClassSelect = async (cls) => {
-    try {
-      setSelectedClass(cls);
-      setMenuVisible(false);
-
-      const data = await getQuestionBank(cls.classroomId);
-      setItems(data || []);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to load data');
-    }
+    setSelectedClass(cls);
+    setMenuVisible(false);
+    const data = await getQuestionBank(cls.classroomId);
+    setItems(data || []);
   };
 
-  const handleOpenFile = async (url) => {
-    try {
-      if (!url) {
-        Alert.alert('Error', 'Invalid file link');
-        return;
-      }
+  if (!uid) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
 
-      const supported = await Linking.canOpenURL(url);
-
-      if (supported) {
-        await Linking.openURL(url);
-      } else {
-        Alert.alert('Error', 'Cannot open file');
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to open file');
-    }
-  };
-
-  // =========================
-  // UI
-  // =========================
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.scroll}>
-      {/* CLASS SELECT */}
+    <ScrollView style={[styles.container, { backgroundColor: colors.background }]} contentContainerStyle={styles.scroll}>
       <Menu
         visible={menuVisible}
         onDismiss={() => setMenuVisible(false)}
@@ -108,41 +70,71 @@ export default function StudentQuestionBankScreen() {
           <Button
             mode="outlined"
             onPress={() => setMenuVisible(true)}
-            style={styles.select}
+            style={[styles.select, { borderColor: colors.border }]}
+            textColor={colors.text}
+            icon="chevron-down"
+            contentStyle={{ flexDirection: 'row-reverse' }}
           >
-            {selectedClass
-              ? selectedClass.className
-              : 'Select Classroom'}
+            {selectedClass ? `${selectedClass.className} (${selectedClass.classroomCode})` : 'Select Classroom'}
           </Button>
         }
       >
         {classrooms.map((cls) => (
           <Menu.Item
             key={cls.classroomId}
-            title={cls.className}
+            title={`${cls.className} (${cls.classroomCode})`}
             onPress={() => handleClassSelect(cls)}
           />
         ))}
       </Menu>
 
-      {/* CONTENT */}
       {items.length === 0 ? (
         <EmptyState
-          title="No question papers"
-          subtitle="Practice papers will appear here"
+          title="No Question Papers"
+          subtitle="Practice question papers and PYQ solutions published by your teacher will appear here"
         />
       ) : (
         items.map((item) => (
-          <Card key={item.qbId} style={styles.card}>
+          <Card
+            key={item.qbId || item.id}
+            style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            mode="outlined"
+          >
             <Card.Content>
-              <Text variant="titleMedium">{item.title}</Text>
+              <View style={styles.cardHeader}>
+                <MaterialCommunityIcons name="help-box-outline" size={24} color={colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text variant="titleMedium" style={{ fontWeight: '700', color: colors.text }}>
+                    {item.title}
+                  </Text>
+                  {item.description ? (
+                    <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 2 }}>{item.description}</Text>
+                  ) : null}
+                </View>
+              </View>
 
-              <Text style={styles.meta}>{item.fileName}</Text>
+              {item.fileName ? (
+                <Chip icon="attachment" style={styles.chip} textStyle={{ fontSize: 11 }}>
+                  {item.fileName}
+                </Chip>
+              ) : null}
+
+              {item.createdAt && (
+                <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 8 }}>
+                  Uploaded: {formatDate(item.createdAt)}
+                </Text>
+              )}
             </Card.Content>
 
-            <Card.Actions>
-              <Button onPress={() => handleOpenFile(item.fileUrl)}>
-                Download
+            <Card.Actions style={{ borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(0,0,0,0.06)' }}>
+              <Button
+                mode="contained-tonal"
+                icon="download"
+                buttonColor={isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight}
+                textColor={colors.primaryDark}
+                onPress={() => openOrDownloadFile(item.fileUrl, item.fileName || 'question_bank.pdf')}
+              >
+                Download Question Paper
               </Button>
             </Card.Actions>
           </Card>
@@ -152,37 +144,12 @@ export default function StudentQuestionBankScreen() {
   );
 }
 
-// =========================
-// STYLES
-// =========================
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-
-  scroll: {
-    padding: 16,
-  },
-
-  select: {
-    marginBottom: 16,
-  },
-
-  card: {
-    marginBottom: 12,
-    borderRadius: 12,
-  },
-
-  meta: {
-    color: COLORS.textSecondary,
-    marginTop: 4,
-  },
-
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-  },
+  container: { flex: 1 },
+  scroll: { padding: 16, paddingBottom: 40 },
+  select: { marginBottom: 16, borderRadius: 10 },
+  card: { marginBottom: 14, borderRadius: 16, borderWidth: 1 },
+  cardHeader: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  chip: { alignSelf: 'flex-start', marginTop: 8 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 });
