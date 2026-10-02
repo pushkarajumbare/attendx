@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { ScrollView, StyleSheet, Alert, View, TouchableOpacity, Linking } from 'react-native';
+import { ScrollView, StyleSheet, Alert, View, TouchableOpacity, Linking, RefreshControl } from 'react-native';
 import { Text, Card, Button, Menu, ActivityIndicator, Chip, ProgressBar, Portal, Dialog, TextInput } from 'react-native-paper';
 import { useFocusEffect } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -15,7 +15,7 @@ import {
   getStudentSubmission,
 } from '../../src/services/contentService';
 import { EmptyState } from '../../src/components/EmptyState';
-import { formatDate, formatDateTime } from '../../src/utils/helpers';
+import { formatDateTime, toValidDate } from '../../src/utils/helpers';
 import { THEME_COLORS } from '../../src/constants';
 
 export default function StudentTasksScreen() {
@@ -27,6 +27,9 @@ export default function StudentTasksScreen() {
   const [selectedClass, setSelectedClass] = useState(null);
   const [assignments, setAssignments] = useState([]);
   const [submissionsMap, setSubmissionsMap] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(null);
   const [menuVisible, setMenuVisible] = useState(false);
   const [submittingId, setSubmittingId] = useState(null);
   const [submitProgress, setSubmitProgress] = useState(null);
@@ -37,34 +40,51 @@ export default function StudentTasksScreen() {
   const [submissionUrlInput, setSubmissionUrlInput] = useState('');
 
   const loadData = useCallback(async () => {
-    if (!uid) return;
+    if (!uid) {
+      setLoading(false);
+      return;
+    }
     try {
+      setError(null);
       const classes = await getStudentClassrooms(uid);
       const safeClasses = classes || [];
       setClassrooms(safeClasses);
+      setSelectedClass((current) => (
+        current && safeClasses.some((classroom) => classroom.classroomId === current.classroomId)
+          ? safeClasses.find((classroom) => classroom.classroomId === current.classroomId)
+          : null
+      ));
 
-      const cls = selectedClass || safeClasses[0];
-      if (cls) {
-        setSelectedClass(cls);
-        const data = await getAssignments(cls.classroomId);
-        const fetchedAssignments = data || [];
-        setAssignments(fetchedAssignments);
+      const groupedAssignments = await Promise.all(safeClasses.map(async (classroom) => {
+        const classAssignments = await getAssignments(classroom.classroomId);
+        return (classAssignments || []).map((assignment) => ({
+          ...assignment,
+          classroomId: classroom.classroomId,
+          classroomName: classroom.className || 'Classroom',
+        }));
+      }));
+      const fetchedAssignments = groupedAssignments.flat();
+      setAssignments(fetchedAssignments);
 
-        // Fetch student submission status for each assignment
-        const map = {};
-        await Promise.all(
-          fetchedAssignments.map(async (item) => {
-            const id = item.assignmentId || item.id;
-            const sub = await getStudentSubmission(id, uid);
-            if (sub) map[id] = sub;
-          })
-        );
-        setSubmissionsMap(map);
-      }
-    } catch (error) {
-      console.log('Assignment load error:', error);
+      const map = {};
+      await Promise.all(fetchedAssignments.map(async (item) => {
+        const id = item.assignmentId || item.id;
+        try {
+          const sub = await getStudentSubmission(id, uid);
+          if (sub) map[id] = sub;
+        } catch (submissionError) {
+          console.log('Submission status notice:', submissionError?.message);
+        }
+      }));
+      setSubmissionsMap(map);
+    } catch (loadError) {
+      console.log('Assignment load error:', loadError);
+      setError(loadError.message || 'Failed to load assignments');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-  }, [uid, selectedClass]);
+  }, [uid]);
 
   useFocusEffect(
     useCallback(() => {
@@ -72,34 +92,26 @@ export default function StudentTasksScreen() {
     }, [loadData])
   );
 
-  const handleSelectClass = async (cls) => {
+  const handleSelectClass = (cls) => {
     setSelectedClass(cls);
     setMenuVisible(false);
-    try {
-      const data = await getAssignments(cls.classroomId);
-      const fetched = data || [];
-      setAssignments(fetched);
-
-      const map = {};
-      await Promise.all(
-        fetched.map(async (item) => {
-          const id = item.assignmentId || item.id;
-          const sub = await getStudentSubmission(id, uid);
-          if (sub) map[id] = sub;
-        })
-      );
-      setSubmissionsMap(map);
-    } catch (err) {
-      console.log('Fetch class assignments error:', err);
-    }
   };
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadData();
+  }, [loadData]);
+
   const handleFileSubmission = async (assignmentId) => {
+    if (submittingId) return;
+    setSubmittingId(assignmentId);
     const file = await pickDocument();
-    if (!file) return;
+    if (!file) {
+      setSubmittingId(null);
+      return;
+    }
 
     try {
-      setSubmittingId(assignmentId);
       setSubmitProgress(0);
 
       const sub = await submitAssignment(assignmentId, uid, { fileAsset: file }, (progress) => {
@@ -117,6 +129,7 @@ export default function StudentTasksScreen() {
   };
 
   const handleUrlSubmitConfirm = async () => {
+    if (submittingId) return;
     const trimmed = submissionUrlInput.trim();
     if (!trimmed) {
       Alert.alert('Validation Error', 'Please enter your completed work URL (e.g. GitHub, Google Drive, Notion)');
@@ -124,6 +137,7 @@ export default function StudentTasksScreen() {
     }
 
     const assignmentId = targetAssignmentId;
+    if (!assignmentId) return;
     setUrlDialogVisible(false);
 
     try {
@@ -157,13 +171,21 @@ export default function StudentTasksScreen() {
   if (!uid) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ color: colors.text }}>Please log in to view assignments.</Text>
       </View>
     );
   }
 
+  const visibleAssignments = selectedClass
+    ? assignments.filter((item) => item.classroomId === selectedClass.classroomId)
+    : assignments;
+
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]} contentContainerStyle={styles.scroll}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={styles.scroll}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
+    >
       {/* 1. CLASSROOM SELECTOR */}
       <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
         <Card.Content>
@@ -186,10 +208,11 @@ export default function StudentTasksScreen() {
                 icon="chevron-down"
                 contentStyle={{ flexDirection: 'row-reverse' }}
               >
-                {selectedClass ? `${selectedClass.className} (${selectedClass.classroomCode})` : 'Select Classroom'}
+                {selectedClass ? `${selectedClass.className} (${selectedClass.classroomCode})` : 'All Classrooms'}
               </Button>
             }
           >
+            <Menu.Item title="All Classrooms" onPress={() => handleSelectClass(null)} />
             {classrooms.map((cls) => (
               <Menu.Item
                 key={cls.classroomId}
@@ -233,17 +256,28 @@ export default function StudentTasksScreen() {
       {/* 2. TASKS LIST */}
       <View style={{ marginBottom: 12, marginTop: 4 }}>
         <Text variant="titleMedium" style={{ fontWeight: '700', color: colors.text }}>
-          {selectedClass?.className || 'Classroom'} Tasks ({assignments.length})
+          {selectedClass?.className || 'All Classrooms'} Tasks ({visibleAssignments.length})
         </Text>
       </View>
 
-      {assignments.length === 0 ? (
+      {loading && assignments.length === 0 ? (
+        <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: 30 }} />
+      ) : error ? (
+        <View style={styles.loadingContainer}>
+          <Text style={{ color: colors.textSecondary, textAlign: 'center' }}>{error}</Text>
+          <Button mode="contained" onPress={loadData} buttonColor={colors.primary} style={{ marginTop: 12 }}>
+            Retry
+          </Button>
+        </View>
+      ) : visibleAssignments.length === 0 ? (
         <EmptyState
           title="No Tasks Assigned"
-          subtitle="Tasks published by your teacher for this classroom will appear here."
+          subtitle={selectedClass
+            ? `Tasks published for ${selectedClass.className} will appear here.`
+            : 'Tasks published for your enrolled classrooms will appear here.'}
         />
       ) : (
-        assignments.map((item) => {
+        visibleAssignments.map((item) => {
           const assignmentId = item.assignmentId || item.id;
           const isThisSubmitting = submittingId === assignmentId;
           const existingSubmission = submissionsMap[assignmentId];
@@ -251,10 +285,8 @@ export default function StudentTasksScreen() {
           // Deadline calculation
           let isPastDeadline = false;
           if (item.deadline) {
-            const deadlineMs = item.deadline.toDate ? item.deadline.toDate().getTime() : new Date(item.deadline).getTime();
-            if (!Number.isNaN(deadlineMs) && Date.now() > deadlineMs) {
-              isPastDeadline = true;
-            }
+            const deadline = toValidDate(item.deadline);
+            isPastDeadline = !deadline || Date.now() >= deadline.getTime();
           }
 
           return (
@@ -270,6 +302,11 @@ export default function StudentTasksScreen() {
                     <Text variant="titleMedium" style={{ fontWeight: '700', color: colors.text }}>
                       {item.title}
                     </Text>
+                    {!selectedClass && (
+                      <Text style={{ color: colors.textSecondary, fontSize: 11, marginTop: 2 }}>
+                        {item.classroomName}
+                      </Text>
+                    )}
                     {item.description ? (
                       <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 4 }}>
                         {item.description}
@@ -337,6 +374,17 @@ export default function StudentTasksScreen() {
               </Card.Content>
 
               <Card.Actions style={styles.cardActions}>
+                {item.resourceUrl && (
+                  <Button
+                    mode="outlined"
+                    icon="open-in-new"
+                    textColor={colors.primary}
+                    style={{ borderColor: colors.primary }}
+                    onPress={() => handleOpenUrl(item.resourceUrl)}
+                  >
+                    Teacher Link
+                  </Button>
+                )}
                 {item.fileUrl && (
                   <Button
                     mode="outlined"
@@ -359,7 +407,7 @@ export default function StudentTasksScreen() {
                       mode="contained"
                       icon="link"
                       buttonColor={colors.primary}
-                      disabled={isThisSubmitting}
+                      disabled={Boolean(submittingId)}
                       onPress={() => {
                         setTargetAssignmentId(assignmentId);
                         setSubmissionUrlInput(existingSubmission?.submissionUrl || '');
@@ -372,7 +420,7 @@ export default function StudentTasksScreen() {
                       mode="outlined"
                       icon="upload"
                       textColor={colors.primary}
-                      disabled={isThisSubmitting}
+                      disabled={Boolean(submittingId)}
                       onPress={() => handleFileSubmission(assignmentId)}
                     >
                       File
@@ -410,7 +458,13 @@ export default function StudentTasksScreen() {
             <Button onPress={() => setUrlDialogVisible(false)} textColor={colors.textSecondary}>
               Cancel
             </Button>
-            <Button onPress={handleUrlSubmitConfirm} mode="contained" buttonColor={colors.primary}>
+            <Button
+              onPress={handleUrlSubmitConfirm}
+              mode="contained"
+              buttonColor={colors.primary}
+              loading={Boolean(submittingId)}
+              disabled={Boolean(submittingId)}
+            >
               Submit
             </Button>
           </Dialog.Actions>

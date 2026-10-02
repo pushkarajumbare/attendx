@@ -20,31 +20,79 @@ function toRad(value) {
   return (value * Math.PI) / 180;
 }
 
-export function formatDate(date) {
-  const d = date instanceof Date ? date : new Date(date);
-  return d.toLocaleDateString('en-IN', {
+export function toValidDate(value) {
+  if (value == null || value === '') return null;
+
+  let date;
+  try {
+    if (value instanceof Date) {
+      date = value;
+    } else if (typeof value?.toDate === 'function') {
+      date = value.toDate();
+    } else if (typeof value === 'number') {
+      date = new Date(value);
+    } else if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      if (/^\d{10}$/.test(trimmed)) date = new Date(Number(trimmed) * 1000);
+      else if (/^\d{11,13}$/.test(trimmed)) date = new Date(Number(trimmed));
+      else date = new Date(trimmed);
+    } else if (typeof value === 'object' && Number.isFinite(value.seconds ?? value._seconds)) {
+      date = new Date((value.seconds ?? value._seconds) * 1000);
+    }
+  } catch (_) {
+    return null;
+  }
+
+  return date instanceof Date && Number.isFinite(date.getTime()) ? date : null;
+}
+
+export function withTimeout(promise, timeoutMs = 15000, message = 'Request timed out. Please try again.') {
+  let timeoutId;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timeoutId));
+}
+
+export function formatDate(value) {
+  const date = toValidDate(value);
+  if (!date) return 'N/A';
+  return date.toLocaleDateString('en-IN', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
   });
 }
 
-export function formatTime(date) {
-  const d = date instanceof Date ? date : new Date(date);
-  return d.toLocaleTimeString('en-IN', {
+export function formatTime(value) {
+  const date = toValidDate(value);
+  if (!date) return 'N/A';
+  return date.toLocaleTimeString('en-IN', {
     hour: '2-digit',
     minute: '2-digit',
   });
 }
 
-export function formatDateTime(date) {
-  return `${formatDate(date)} ${formatTime(date)}`;
+export function formatDateTime(value) {
+  const date = toValidDate(value);
+  return date ? `${formatDate(date)} ${formatTime(date)}` : 'N/A';
 }
 
 export function isWithinTimeWindow(startTime, endTime, now = new Date()) {
-  const start = startTime instanceof Date ? startTime : new Date(startTime);
-  const end = endTime instanceof Date ? endTime : new Date(endTime);
-  return now >= start && now <= end;
+  const start = toValidDate(startTime);
+  const end = toValidDate(endTime);
+  const current = toValidDate(now);
+  return Boolean(start && end && current && current >= start && current <= end);
+}
+
+export function isCompletedSession(session, now = Date.now()) {
+  const start = toValidDate(session?.startTime);
+  const end = toValidDate(session?.endTime);
+  const current = toValidDate(now);
+  return Boolean(start && end && current && start <= current && (session?.status === 'ended' || end <= current));
 }
 
 export function getTodayKey() {
@@ -78,8 +126,9 @@ export function getSessionStatusLabel(status) {
 
 // Format session duration
 export function formatSessionDuration(startTime, endTime) {
-  const start = startTime instanceof Date ? startTime : new Date(startTime);
-  const end = endTime instanceof Date ? endTime : new Date(endTime);
+  const start = toValidDate(startTime);
+  const end = toValidDate(endTime);
+  if (!start || !end || end < start) return 'N/A';
   const minutes = Math.round((end - start) / (1000 * 60));
   
   if (minutes < 60) {
@@ -98,16 +147,48 @@ export function truncate(str, length = 20) {
 }
 
 // CSV Export Utility for Attendance Reports
-export function exportAttendanceToCSV(records = [], classroomName = 'Classroom') {
-  const headers = ['Attendance ID', 'Student ID', 'Status', 'Date', 'Distance (m)', 'Face Confidence (%)'];
-  const rows = records.map((r) => [
-    `"${r.attendanceId || ''}"`,
-    `"${r.studentId || ''}"`,
-    `"${r.status || 'present'}"`,
-    `"${r.date || ''}"`,
-    r.distanceMeters ?? 0,
-    r.faceConfidence ?? 0,
-  ]);
-  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+export function exportAttendanceToCSV({ classroom = {}, students = [], sessions = [], records = [] } = {}) {
+  const headers = [
+    'Classroom ID', 'Classroom Name', 'Subject', 'Student ID', 'Student Name', 'Roll Number',
+    'Session ID', 'Lecture Date', 'Start Time', 'End Time', 'Attendance Status', 'Marked Time',
+    'Face Verified', 'Face Confidence', 'GPS Verified', 'Distance Meters',
+  ];
+  const recordByPair = new Map(records.map((record) => [`${record.sessionId}|${record.studentId}`, record]));
+  const rows = [];
+
+  for (const session of sessions) {
+    const start = toValidDate(session.startTime);
+    const end = toValidDate(session.endTime);
+    if (!start || !end || start.getTime() > Date.now()) continue;
+    if (session.status !== 'ended' && end.getTime() > Date.now()) continue;
+
+    for (const student of students) {
+      const record = recordByPair.get(`${session.sessionId}|${student.studentId}`);
+      const isPresent = record?.status === 'present';
+      const radius = Number(session.radiusMeters) || 50;
+      const gpsVerified = Boolean(record && Number.isFinite(Number(record.distanceMeters)) && Number(record.distanceMeters) <= radius);
+      rows.push([
+        classroom.classroomId || '',
+        classroom.className || '',
+        session.subject || classroom.subject || '',
+        student.studentId || '',
+        student.name || student.displayName || '',
+        student.rollNumber || '',
+        session.sessionId || '',
+        formatDate(start),
+        formatTime(start),
+        formatTime(end),
+        isPresent ? 'Present' : 'Absent',
+        isPresent ? formatDateTime(record.time) : '',
+        isPresent && record.faceVerified ? 'Yes' : 'No',
+        isPresent ? record.faceConfidence ?? '' : '',
+        isPresent && gpsVerified ? 'Yes' : 'No',
+        isPresent ? record.distanceMeters ?? '' : '',
+      ]);
+    }
+  }
+
+  const escapeCsv = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  return [headers, ...rows].map((row) => row.map(escapeCsv).join(',')).join('\r\n');
 }
 

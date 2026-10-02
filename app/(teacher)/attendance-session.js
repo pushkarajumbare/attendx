@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ScrollView, StyleSheet, Alert, View } from 'react-native';
 import { Text, TextInput, Button, Card, Menu, Chip } from 'react-native-paper';
 import { useFocusEffect } from 'expo-router';
@@ -13,6 +13,7 @@ import {
   getActiveSession,
 } from '../../src/services/attendanceService';
 import { ATTENDANCE, THEME_COLORS } from '../../src/constants';
+import { toValidDate } from '../../src/utils/helpers';
 
 export default function AttendanceSessionScreen() {
   const { profile } = useAuth();
@@ -30,6 +31,9 @@ export default function AttendanceSessionScreen() {
 
   const [menuVisible, setMenuVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const selectedClassRef = useRef(null);
+  selectedClassRef.current = selectedClass;
 
   useFocusEffect(
     useCallback(() => {
@@ -42,7 +46,7 @@ export default function AttendanceSessionScreen() {
           setClassrooms(safeClasses);
 
           if (safeClasses.length > 0) {
-            const first = selectedClass || safeClasses[0];
+            const first = safeClasses.find((item) => item.classroomId === selectedClassRef.current?.classroomId) || safeClasses[0];
             setSelectedClass(first);
             setSubject(first.subject || first.className || '');
 
@@ -55,8 +59,23 @@ export default function AttendanceSessionScreen() {
       };
 
       load();
-    }, [uid, selectedClass])
+      const refreshInterval = setInterval(async () => {
+        const currentClassroomId = selectedClassRef.current?.classroomId;
+        if (!currentClassroomId) return;
+        try {
+          setActiveSession(await getActiveSession(currentClassroomId));
+        } catch (err) {
+          console.log('Refresh session status error:', err);
+        }
+      }, 30000);
+      return () => clearInterval(refreshInterval);
+    }, [uid])
   );
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const buildDateTime = (timeStr) => {
     const parts = timeStr.split(':').map(Number);
@@ -103,6 +122,15 @@ export default function AttendanceSessionScreen() {
       Alert.alert('Error', e.message);
     }
   };
+
+  const sessionEnd = toValidDate(activeSession?.endTime);
+  const remainingMs = sessionEnd ? Math.max(0, sessionEnd.getTime() - now) : 0;
+  const remainingHours = Math.floor(remainingMs / 3600000);
+  const remainingMinutes = Math.floor((remainingMs % 3600000) / 60000);
+  const remainingSeconds = Math.floor((remainingMs % 60000) / 1000);
+  const remainingTime = remainingHours > 0
+    ? `${remainingHours}:${String(remainingMinutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`
+    : `${String(remainingMinutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} contentContainerStyle={styles.scroll}>
@@ -168,7 +196,7 @@ export default function AttendanceSessionScreen() {
                 Allowed GPS Geofence: {activeSession.radiusMeters || 50} meters radius
               </Text>
               <Chip icon="check-decagram" style={{ alignSelf: 'flex-start', marginTop: 10, backgroundColor: 'rgba(16, 185, 129, 0.2)' }} textStyle={{ color: THEME_COLORS.success, fontWeight: '700' }}>
-                LIVE & ACCESSIBLE
+                {remainingMs > 0 ? `ACTIVE · ${remainingTime} REMAINING` : 'ENDED'}
               </Chip>
             </View>
 

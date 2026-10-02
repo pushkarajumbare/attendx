@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { View, StyleSheet, ScrollView, RefreshControl, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { Text, Button, Card, Chip, FAB } from 'react-native-paper';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -7,9 +7,9 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
 import { useAppTheme } from '../../src/context/ThemeContext';
 import { getStudentClassrooms } from '../../src/services/classroomService';
-import { getAttendanceStats } from '../../src/services/attendanceService';
+import { getAttendanceStats, getActiveSession } from '../../src/services/attendanceService';
 import { StatCard } from '../../src/components/StatCard';
-import { calculateAttendancePercentage } from '../../src/utils/helpers';
+import { calculateAttendancePercentage, toValidDate } from '../../src/utils/helpers';
 import { THEME_COLORS } from '../../src/constants';
 
 export default function StudentDashboard() {
@@ -19,6 +19,10 @@ export default function StudentDashboard() {
   const uid = user?.uid;
 
   const [classrooms, setClassrooms] = useState([]);
+  const classroomsRef = useRef([]);
+  const sessionsRequestInFlight = useRef(false);
+  const [activeSessions, setActiveSessions] = useState([]);
+  const [now, setNow] = useState(Date.now());
   const [stats, setStats] = useState({
     present: 0,
     total: 0,
@@ -28,6 +32,25 @@ export default function StudentDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  const loadActiveSessions = useCallback(async (classes) => {
+    if (sessionsRequestInFlight.current) return;
+    sessionsRequestInFlight.current = true;
+    try {
+      const sessions = await Promise.all((classes || []).map(async (classroom) => {
+        try {
+          const session = await getActiveSession(classroom.classroomId);
+          return session ? { ...session, className: classroom.className } : null;
+        } catch (sessionError) {
+          console.log('Session status notice:', sessionError?.message);
+          return null;
+        }
+      }));
+      setActiveSessions(sessions.filter(Boolean));
+    } finally {
+      sessionsRequestInFlight.current = false;
+    }
+  }, []);
 
   const loadData = useCallback(async () => {
     if (!uid) {
@@ -39,20 +62,20 @@ export default function StudentDashboard() {
       setError(null);
       const classes = await getStudentClassrooms(uid);
       const safeClasses = classes || [];
+      classroomsRef.current = safeClasses;
       setClassrooms(safeClasses);
+      await loadActiveSessions(safeClasses);
 
-      let totalPresent = 0;
-      let totalSessions = 0;
-
-      for (const cls of safeClasses) {
+      const statsByClass = await Promise.all(safeClasses.map(async (classroom) => {
         try {
-          const s = await getAttendanceStats(uid, cls.classroomId);
-          totalPresent += s?.present || 0;
-          totalSessions += s?.total || 0;
-        } catch (err) {
-          console.log('Attendance stats notice:', err?.message);
+          return await getAttendanceStats(uid, classroom.classroomId);
+        } catch (statsError) {
+          console.log('Attendance stats notice:', statsError?.message);
+          return { present: 0, total: 0 };
         }
-      }
+      }));
+      const totalPresent = statsByClass.reduce((sum, statsItem) => sum + (statsItem?.present || 0), 0);
+      const totalSessions = statsByClass.reduce((sum, statsItem) => sum + (statsItem?.total || 0), 0);
 
       setStats({
         present: totalPresent,
@@ -65,18 +88,28 @@ export default function StudentDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [uid]);
+  }, [uid, loadActiveSessions]);
 
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [loadData])
+      const refreshInterval = setInterval(() => loadActiveSessions(classroomsRef.current), 30000);
+      return () => clearInterval(refreshInterval);
+    }, [loadData, loadActiveSessions])
   );
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadData();
-    setRefreshing(false);
+    try {
+      await loadData();
+    } finally {
+      setRefreshing(false);
+    }
   }, [loadData]);
 
   if (loading) {
@@ -174,6 +207,63 @@ export default function StudentDashboard() {
             color={colors.primary}
           />
         </View>
+
+        {activeSessions.length > 0 && (
+          <View style={styles.activeSessionsSection}>
+            <Text variant="titleMedium" style={[styles.sectionTitle, { color: colors.text }]}>
+              Attendance in Progress
+            </Text>
+            {activeSessions.map((session) => {
+              const endTime = toValidDate(session.endTime);
+              const remainingMs = endTime ? Math.max(0, endTime.getTime() - now) : 0;
+              const hours = Math.floor(remainingMs / 3600000);
+              const minutes = Math.floor((remainingMs % 3600000) / 60000);
+              const seconds = Math.floor((remainingMs % 60000) / 1000);
+              const remaining = hours > 0
+                ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+                : `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+
+              return (
+                <Card
+                  key={session.sessionId}
+                  style={[styles.activeSessionCard, { backgroundColor: isDark ? '#17352D' : '#ECFDF5', borderColor: THEME_COLORS.success }]}
+                  mode="outlined"
+                >
+                  <Card.Content style={styles.activeSessionContent}>
+                    <View style={styles.activeSessionInfo}>
+                      <View style={styles.activeSessionHeading}>
+                        <MaterialCommunityIcons
+                          name={remainingMs > 0 ? 'broadcast' : 'broadcast-off'}
+                          size={20}
+                          color={remainingMs > 0 ? THEME_COLORS.success : colors.textSecondary}
+                        />
+                        <Text style={[styles.activeSessionStatus, { color: remainingMs > 0 ? THEME_COLORS.success : colors.textSecondary }]}>
+                          {remainingMs > 0 ? 'ACTIVE' : 'ENDED'}
+                        </Text>
+                      </View>
+                      <Text variant="titleMedium" style={[styles.className, { color: colors.text }]}>
+                        {session.className}
+                      </Text>
+                      <Text style={{ color: colors.textSecondary }}>
+                        {session.subject || 'Attendance session'} · {remainingMs > 0 ? `${remaining} remaining` : 'Session expired'}
+                      </Text>
+                    </View>
+                    <Button
+                      mode="contained"
+                      compact
+                      disabled={remainingMs <= 0}
+                      buttonColor={THEME_COLORS.success}
+                      textColor="#FFFFFF"
+                      onPress={() => router.push({ pathname: '/(student)/attendance', params: { classroomId: session.classroomId } })}
+                    >
+                      {remainingMs > 0 ? 'Check In' : 'Expired'}
+                    </Button>
+                  </Card.Content>
+                </Card>
+              );
+            })}
+          </View>
+        )}
 
         {/* 4. ACTIONS */}
         <View style={styles.actions}>
@@ -326,6 +416,12 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 16,
   },
+  activeSessionsSection: { marginBottom: 16 },
+  activeSessionCard: { borderRadius: 12, borderWidth: 1, marginBottom: 10 },
+  activeSessionContent: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  activeSessionInfo: { flex: 1, gap: 4 },
+  activeSessionHeading: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  activeSessionStatus: { fontSize: 12, fontWeight: '800' },
   actions: {
     marginBottom: 20,
   },

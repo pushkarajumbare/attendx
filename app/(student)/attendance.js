@@ -1,20 +1,27 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { View, StyleSheet, Alert, ScrollView, RefreshControl } from 'react-native';
 import { Text, Button, Card, Menu, Divider, ActivityIndicator, Chip } from 'react-native-paper';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useAuth } from '../../src/context/AuthContext';
 import { useAppTheme } from '../../src/context/ThemeContext';
 import { getStudentClassrooms } from '../../src/services/classroomService';
-import { getActiveSession, getClassroomSessions, markAttendance } from '../../src/services/attendanceService';
-import { getSessionStatusLabel, formatDateTime } from '../../src/utils/helpers';
+import {
+  getActiveSession,
+  getClassroomAttendanceSummary,
+  getStudentLectureHistory,
+  markAttendance,
+} from '../../src/services/attendanceService';
+import { formatDate, formatTime, formatDateTime, toValidDate } from '../../src/utils/helpers';
 import { THEME_COLORS, REJECTION_REASONS } from '../../src/constants';
 import { FaceCamera } from '../../src/components/FaceCamera';
 
 export default function StudentAttendanceScreen() {
-  const { user, profile } = useAuth();
+  const { user, profile, loading: authLoading, refreshProfile } = useAuth();
   const { colors, isDark } = useAppTheme();
+  const { classroomId: classroomIdParam } = useLocalSearchParams();
+  const requestedClassroomId = Array.isArray(classroomIdParam) ? classroomIdParam[0] : classroomIdParam;
   const uid = user?.uid;
 
   const [classrooms, setClassrooms] = useState([]);
@@ -23,6 +30,15 @@ export default function StudentAttendanceScreen() {
   const [menuVisible, setMenuVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [classroomSummaries, setClassroomSummaries] = useState([]);
+  const [lectureHistory, setLectureHistory] = useState([]);
+  const [historyClassId, setHistoryClassId] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+  const [classroomLoading, setClassroomLoading] = useState(true);
+  const [classroomError, setClassroomError] = useState(null);
+  const sessionRequestInFlight = useRef(false);
+  const [now, setNow] = useState(Date.now());
 
   // Camera Modal state toggle
   const [showCamera, setShowCamera] = useState(false);
@@ -31,23 +47,39 @@ export default function StudentAttendanceScreen() {
   // LOAD CLASSROOMS
   // =====================
   const loadClassrooms = useCallback(async () => {
-    if (!uid) return;
+    if (!uid) {
+      setClassroomLoading(false);
+      return;
+    }
     try {
+      setClassroomError(null);
       const classes = await getStudentClassrooms(uid);
       const safeClasses = classes || [];
       setClassrooms(safeClasses);
+      const summaries = await Promise.all(safeClasses.map(async (classroom) => ({
+        ...classroom,
+        attendanceSummary: await getClassroomAttendanceSummary(uid, classroom.classroomId),
+      })));
+      setClassroomSummaries(summaries);
       if (safeClasses.length > 0) {
         setSelectedClass((prev) => {
+          const requestedClass = safeClasses.find((classroom) => classroom.classroomId === requestedClassroomId);
+          if (requestedClass) return requestedClass;
           if (prev && safeClasses.some((c) => c.classroomId === prev.classroomId)) {
             return prev;
           }
           return safeClasses[0];
         });
+      } else {
+        setSelectedClass(null);
       }
     } catch (error) {
       console.log('Classroom load error:', error);
+      setClassroomError(error.message || 'Failed to load classrooms');
+    } finally {
+      setClassroomLoading(false);
     }
-  }, [uid]);
+  }, [uid, requestedClassroomId]);
 
   // =====================
   // LOAD SESSION
@@ -57,11 +89,15 @@ export default function StudentAttendanceScreen() {
       setActiveSession(null);
       return;
     }
+    if (sessionRequestInFlight.current) return;
+    sessionRequestInFlight.current = true;
     try {
       const active = await getActiveSession(selectedClass.classroomId);
       setActiveSession(active || null);
     } catch (error) {
       console.log('Session load error:', error);
+    } finally {
+      sessionRequestInFlight.current = false;
     }
   }, [selectedClass]);
 
@@ -74,13 +110,38 @@ export default function StudentAttendanceScreen() {
   useFocusEffect(
     useCallback(() => {
       loadSession();
+      const interval = setInterval(loadSession, 30000);
+      return () => clearInterval(interval);
     }, [loadSession])
   );
 
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const openLectureHistory = async (classroom) => {
+    setSelectedClass(classroom);
+    setHistoryClassId(classroom.classroomId);
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      setLectureHistory(await getStudentLectureHistory(uid, classroom.classroomId));
+    } catch (error) {
+      setLectureHistory([]);
+      setHistoryError(error.message || 'Failed to load lecture history');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadClassrooms(), loadSession()]);
-    setRefreshing(false);
+    try {
+      await Promise.all([loadClassrooms(), loadSession()]);
+    } finally {
+      setRefreshing(false);
+    }
   }, [loadClassrooms, loadSession]);
 
   const getStatusColor = (status) => {
@@ -107,8 +168,14 @@ export default function StudentAttendanceScreen() {
     }
   };
 
+  const sessionEnd = toValidDate(activeSession?.endTime);
+  const remainingMs = sessionEnd ? Math.max(0, sessionEnd.getTime() - now) : 0;
+  const remainingTime = `${String(Math.floor(remainingMs / 60000)).padStart(2, '0')}:${String(Math.floor((remainingMs % 60000) / 1000)).padStart(2, '0')}`;
+  const canMarkAttendance = Boolean(activeSession && remainingMs > 0 && ['active', 'reopened'].includes(activeSession.status));
+
   // Face scanner captures verify payload and marks attendance
   const handleFaceVerifyComplete = async (capturedResult) => {
+    if (loading) return;
     setShowCamera(false);
     setLoading(true);
 
@@ -171,11 +238,22 @@ export default function StudentAttendanceScreen() {
     }
   };
 
-  if (!profile) {
+  if (authLoading) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.primary} />
         <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading student profile...</Text>
+      </View>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Student profile could not be loaded.</Text>
+        <Button mode="contained" onPress={refreshProfile} buttonColor={colors.primary} style={{ marginTop: 12 }}>
+          Retry
+        </Button>
       </View>
     );
   }
@@ -239,6 +317,71 @@ export default function StudentAttendanceScreen() {
         </Card.Content>
       </Card>
 
+      <Text variant="titleMedium" style={{ color: colors.text, fontWeight: '700', marginBottom: 10 }}>
+        Classroom Attendance
+      </Text>
+      {classroomLoading && <ActivityIndicator size="small" color={colors.primary} style={{ marginBottom: 12 }} />}
+      {classroomError && (
+        <View style={{ marginBottom: 12 }}>
+          <Text style={{ color: THEME_COLORS.danger }}>{classroomError}</Text>
+          <Button onPress={loadClassrooms} mode="text" textColor={colors.primary}>Retry</Button>
+        </View>
+      )}
+      {classroomSummaries.map((classroom) => {
+        const summary = classroom.attendanceSummary || { present: 0, absent: 0, total: 0, teacherName: 'Teacher' };
+        const percentage = summary.total ? Math.round((summary.present / summary.total) * 100) : 0;
+        return (
+          <Card key={classroom.classroomId} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
+            <Card.Content>
+              <Text variant="titleSmall" style={{ color: colors.text, fontWeight: '700' }}>{classroom.className}</Text>
+              <Text style={{ color: colors.textSecondary, marginTop: 3 }}>Teacher: {summary.teacherName}</Text>
+              <Text style={{ color: colors.textSecondary, marginTop: 6 }}>Total lectures: {summary.total}</Text>
+              <View style={[styles.detailRow, { marginTop: 8 }]}>
+                <Text style={[styles.detailsLabel, { color: colors.textSecondary }]}>Present {summary.present}</Text>
+                <Text style={[styles.detailsLabel, { color: colors.textSecondary }]}>Absent {summary.absent}</Text>
+                <Text style={[styles.detailsValue, { color: colors.primary }]}>{percentage}%</Text>
+              </View>
+              <Button compact mode="text" contentStyle={{ justifyContent: 'flex-start' }} onPress={() => openLectureHistory(classroom)}>
+                Lecture History ({summary.total})
+              </Button>
+            </Card.Content>
+          </Card>
+        );
+      })}
+
+      {historyClassId && (
+        <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
+          <Card.Content>
+            <Text variant="titleMedium" style={{ color: colors.text, fontWeight: '700', marginBottom: 8 }}>
+              {classrooms.find((item) => item.classroomId === historyClassId)?.className} Lecture History
+            </Text>
+            {historyLoading ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : historyError ? (
+              <Text style={{ color: THEME_COLORS.danger }}>{historyError}</Text>
+            ) : lectureHistory.length === 0 ? (
+              <Text style={{ color: colors.textSecondary }}>No completed lectures yet.</Text>
+            ) : lectureHistory.map((lecture) => {
+              const present = lecture.attendance?.status === 'present';
+              return (
+                <View key={lecture.sessionId} style={{ paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+                  <Text style={{ color: colors.text, fontWeight: '600' }}>Date: {formatDate(lecture.startTime)}</Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
+                    Start: {formatTime(lecture.startTime)} · End: {formatTime(lecture.endTime)}
+                  </Text>
+                  <Text style={{ color: present ? THEME_COLORS.success : THEME_COLORS.danger, fontWeight: '700', marginTop: 3 }}>
+                    {present ? '✓ Present' : '✗ Absent'}
+                  </Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
+                    Marked time: {lecture.attendance?.time ? formatDateTime(lecture.attendance.time) : 'N/A'}
+                  </Text>
+                </View>
+              );
+            })}
+          </Card.Content>
+        </Card>
+      )}
+
       {/* 2. ATTENDANCE SESSION STATUS */}
       <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
         <Card.Content>
@@ -281,7 +424,7 @@ export default function StudentAttendanceScreen() {
                     />
                   )}
                 >
-                  {getSessionStatusLabel(activeSession.status).toUpperCase()}
+                  {canMarkAttendance ? `ACTIVE · ${remainingTime} REMAINING` : 'ENDED'}
                 </Chip>
               </View>
             </View>
@@ -289,7 +432,7 @@ export default function StudentAttendanceScreen() {
             <View style={styles.emptySessionBox}>
               <MaterialCommunityIcons name="clock-alert-outline" size={36} color={colors.textSecondary} />
               <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                No active attendance session currently open for this classroom.
+                No active attendance session for this classroom. Expired sessions are closed automatically.
               </Text>
             </View>
           )}
@@ -299,7 +442,7 @@ export default function StudentAttendanceScreen() {
       {/* 3. ACTION BUTTON */}
       <Button
         mode="contained"
-        disabled={!activeSession || loading || !['active', 'reopened'].includes(activeSession?.status)}
+        disabled={!canMarkAttendance || loading}
         loading={loading}
         onPress={() => setShowCamera(true)}
         style={styles.scanButton}

@@ -22,7 +22,15 @@ import {
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { COLLECTIONS } from '../constants';
-import { generateClassroomCode } from '../utils/helpers';
+import { generateClassroomCode, withTimeout } from '../utils/helpers';
+
+function readDoc(reference) {
+  return withTimeout(getDoc(reference), 15000, 'Classroom request timed out. Please retry.');
+}
+
+function readDocs(queryReference) {
+  return withTimeout(getDocs(queryReference), 15000, 'Classroom request timed out. Please retry.');
+}
 
 /**
  * Teacher creates a new classroom with an auto-generated unique code.
@@ -70,8 +78,8 @@ export async function getTeacherClassrooms(teacherId) {
     where('teacherId', '==', teacherId),
     orderBy('createdAt', 'desc')
   );
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map((d) => d.data());
+  const snapshot = await readDocs(q);
+  return snapshot.docs.map((d) => ({ ...d.data(), classroomId: d.data().classroomId || d.id }));
 }
 
 /**
@@ -85,7 +93,7 @@ export async function getClassroomByCode(classroomCode) {
     collection(db, COLLECTIONS.CLASSROOMS),
     where('classroomCode', '==', cleanCode)
   );
-  const snapshot = await getDocs(q);
+  const snapshot = await readDocs(q);
   if (snapshot.empty) return null;
   return snapshot.docs[0].data();
 }
@@ -140,22 +148,24 @@ export async function getStudentClassrooms(studentId) {
       collection(db, COLLECTIONS.CLASSROOMS),
       where('studentIds', 'array-contains', studentId)
     );
-    const snapshot = await getDocs(q);
-    const list = snapshot.docs.map((d) => d.data());
+    const snapshot = await readDocs(q);
+    const list = snapshot.docs.map((d) => ({ ...d.data(), classroomId: d.data().classroomId || d.id }));
 
     if (list.length > 0) {
       return list;
     }
 
     // Fallback: Check student document enrolledClasses
-    const studentDoc = await getDoc(doc(db, COLLECTIONS.STUDENTS, studentId));
+    const studentDoc = await readDoc(doc(db, COLLECTIONS.STUDENTS, studentId));
     const enrolledIds = studentDoc.data()?.enrolledClasses || [];
 
     if (enrolledIds.length > 0) {
       const fetched = await Promise.all(
         enrolledIds.map(async (id) => {
-          const docSnap = await getDoc(doc(db, COLLECTIONS.CLASSROOMS, id));
-          return docSnap.exists() ? docSnap.data() : null;
+          const docSnap = await readDoc(doc(db, COLLECTIONS.CLASSROOMS, id));
+          return docSnap.exists()
+            ? { ...docSnap.data(), classroomId: docSnap.data().classroomId || docSnap.id }
+            : null;
         })
       );
       return fetched.filter(Boolean);
@@ -164,7 +174,7 @@ export async function getStudentClassrooms(studentId) {
     return [];
   } catch (error) {
     console.error('[ClassroomService] getStudentClassrooms error:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -173,7 +183,7 @@ export async function getStudentClassrooms(studentId) {
  */
 export async function getClassroomStudents(classroomId) {
   if (!classroomId) return [];
-  const classroomDoc = await getDoc(doc(db, COLLECTIONS.CLASSROOMS, classroomId));
+  const classroomDoc = await readDoc(doc(db, COLLECTIONS.CLASSROOMS, classroomId));
   if (!classroomDoc.exists()) return [];
 
   const studentIds = classroomDoc.data()?.studentIds || [];
@@ -182,7 +192,7 @@ export async function getClassroomStudents(classroomId) {
   const students = await Promise.all(
     studentIds.map(async (sid) => {
       try {
-        const uDoc = await getDoc(doc(db, COLLECTIONS.USERS, sid));
+        const uDoc = await readDoc(doc(db, COLLECTIONS.USERS, sid));
         if (uDoc.exists()) {
           return { studentId: sid, ...uDoc.data() };
         }

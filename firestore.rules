@@ -26,6 +26,26 @@ service cloud.firestore {
       return userDocExists() && getUserData().role == 'student';
     }
 
+    function ownsClassroom(classroomId) {
+      return isAuthenticated()
+        && exists(/databases/$(database)/documents/classrooms/$(classroomId))
+        && get(/databases/$(database)/documents/classrooms/$(classroomId)).data.teacherId == request.auth.uid;
+    }
+
+    function isEnrolled(classroomId) {
+      return isStudent()
+        && exists(/databases/$(database)/documents/classrooms/$(classroomId))
+        && get(/databases/$(database)/documents/classrooms/$(classroomId)).data.studentIds.hasAny([request.auth.uid]);
+    }
+
+    function assignmentExists(assignmentId) {
+      return exists(/databases/$(database)/documents/assignments/$(assignmentId));
+    }
+
+    function assignmentData(assignmentId) {
+      return get(/databases/$(database)/documents/assignments/$(assignmentId)).data;
+    }
+
     // ─── USERS COLLECTION ────────────────────────────────────────────────────
     match /users/{userId} {
       allow read: if isAuthenticated();
@@ -49,24 +69,52 @@ service cloud.firestore {
     // ─── CLASSROOMS COLLECTION ───────────────────────────────────────────────
     match /classrooms/{classroomId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      // Allow teacher owner to update/delete, or student to join (update studentIds)
-      allow update: if isAuthenticated();
+      allow create: if isTeacher() && request.resource.data.teacherId == request.auth.uid;
+      allow update: if resource.data.teacherId == request.auth.uid
+        || (isStudent()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds', 'updatedAt'])
+          && request.resource.data.studentIds.hasAll(resource.data.studentIds)
+          && request.resource.data.studentIds.size() == resource.data.studentIds.size() + 1
+          && request.resource.data.studentIds.hasAny([request.auth.uid]));
       allow delete: if isAuthenticated() && resource.data.teacherId == request.auth.uid;
     }
 
     // ─── ATTENDANCE SESSIONS ─────────────────────────────────────────────────
     match /attendanceSessions/{sessionId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.teacherId == request.auth.uid;
-      allow update, delete: if isAuthenticated() && resource.data.teacherId == request.auth.uid;
+      allow read: if ownsClassroom(resource.data.classroomId) || isEnrolled(resource.data.classroomId);
+      allow create: if isTeacher()
+        && request.resource.data.teacherId == request.auth.uid
+        && ownsClassroom(request.resource.data.classroomId)
+        && request.resource.data.status == 'active'
+        && request.resource.data.startTime < request.resource.data.endTime;
+      allow update: if (resource.data.teacherId == request.auth.uid
+          && ownsClassroom(resource.data.classroomId)
+          && request.resource.data.teacherId == resource.data.teacherId
+          && request.resource.data.classroomId == resource.data.classroomId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'closedAt', 'reopenedAt', 'updatedAt']))
+        || (isEnrolled(resource.data.classroomId)
+          && request.resource.data.status == 'ended'
+          && resource.data.endTime <= request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'closedAt', 'updatedAt']));
+      allow delete: if resource.data.teacherId == request.auth.uid
+        && ownsClassroom(resource.data.classroomId);
     }
 
     // ─── ATTENDANCE RECORDS ──────────────────────────────────────────────────
     match /attendance/{attendanceId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
-      allow update, delete: if isAuthenticated();
+      allow read: if ownsClassroom(resource.data.classroomId) || isEnrolled(resource.data.classroomId);
+      allow create: if isStudent()
+        && request.resource.data.studentId == request.auth.uid
+        && isEnrolled(request.resource.data.classroomId)
+        && exists(/databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId))
+        && get(/databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId)).data.classroomId == request.resource.data.classroomId
+        && get(/databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId)).data.teacherId == request.resource.data.teacherId
+        && get(/databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId)).data.status in ['active', 'reopened']
+        && get(/databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId)).data.startTime <= request.time
+        && get(/databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId)).data.endTime > request.time
+        && attendanceId == request.resource.data.sessionId + '_' + request.auth.uid
+        && !exists(/databases/$(database)/documents/attendance/$(request.resource.data.sessionId + '_' + request.auth.uid));
+      allow update, delete: if false;
     }
 
     // ─── BIOMETRIC FACE DATA ─────────────────────────────────────────────────
@@ -83,15 +131,43 @@ service cloud.firestore {
 
     // ─── ASSIGNMENTS ─────────────────────────────────────────────────────────
     match /assignments/{assignmentId} {
-      allow read: if isAuthenticated();
-      allow create, update, delete: if isAuthenticated();
+      allow read: if ownsClassroom(resource.data.classroomId) || isEnrolled(resource.data.classroomId);
+      allow create: if isTeacher()
+        && request.resource.data.teacherId == request.auth.uid
+        && ownsClassroom(request.resource.data.classroomId);
+      allow update: if resource.data.teacherId == request.auth.uid
+        && ownsClassroom(resource.data.classroomId)
+        && request.resource.data.classroomId == resource.data.classroomId
+        && request.resource.data.teacherId == resource.data.teacherId;
+      allow delete: if resource.data.teacherId == request.auth.uid
+        && ownsClassroom(resource.data.classroomId);
     }
 
     // ─── SUBMISSIONS ─────────────────────────────────────────────────────────
     match /submissions/{submissionId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
-      allow update, delete: if isAuthenticated();
+      allow read: if (assignmentExists(resource.data.assignmentId)
+          && ownsClassroom(assignmentData(resource.data.assignmentId).classroomId))
+        || (resource.data.studentId == request.auth.uid
+          && assignmentExists(resource.data.assignmentId)
+          && isEnrolled(assignmentData(resource.data.assignmentId).classroomId));
+      allow create: if isStudent()
+        && request.resource.data.studentId == request.auth.uid
+        && assignmentExists(request.resource.data.assignmentId)
+        && request.resource.data.classroomId == assignmentData(request.resource.data.assignmentId).classroomId
+        && isEnrolled(request.resource.data.classroomId)
+        && (assignmentData(request.resource.data.assignmentId).deadline == null
+          || request.time < assignmentData(request.resource.data.assignmentId).deadline);
+      allow update: if resource.data.studentId == request.auth.uid
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.assignmentId == resource.data.assignmentId
+        && request.resource.data.classroomId == assignmentData(resource.data.assignmentId).classroomId
+        && isEnrolled(assignmentData(resource.data.assignmentId).classroomId)
+        && assignmentExists(resource.data.assignmentId)
+        && (assignmentData(resource.data.assignmentId).deadline == null
+          || request.time < assignmentData(resource.data.assignmentId).deadline);
+      allow delete: if resource.data.studentId == request.auth.uid
+        || (assignmentExists(resource.data.assignmentId)
+          && ownsClassroom(assignmentData(resource.data.assignmentId).classroomId));
     }
 
     // ─── QUESTION BANK ───────────────────────────────────────────────────────

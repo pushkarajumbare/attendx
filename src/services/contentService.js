@@ -34,6 +34,22 @@ import { Linking, Alert } from 'react-native';
 import { db, storage } from '../config/firebase';
 import { COLLECTIONS } from '../constants';
 import { getClassroomStudents } from './classroomService';
+import { toValidDate, formatDateTime, withTimeout } from '../utils/helpers';
+
+function getAssignmentDeadline(deadline) {
+  if (deadline == null) return null;
+  const parsed = toValidDate(deadline);
+  if (!parsed) throw new Error('Assignment deadline is invalid');
+  return parsed;
+}
+
+function readDoc(reference) {
+  return withTimeout(getDoc(reference), 15000, 'Task request timed out. Please retry.');
+}
+
+function readDocs(queryReference) {
+  return withTimeout(getDocs(queryReference), 15000, 'Task request timed out. Please retry.');
+}
 
 // ===============================================
 // DOCUMENT PICKER HELPER
@@ -82,7 +98,14 @@ export async function pickDocument() {
 export async function uploadFileToStorage(localUri, storagePath, onProgress) {
   try {
     // 1. Fetch file as blob in React Native
-    const response = await fetch(localUri);
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 30000);
+    let response;
+    try {
+      response = await fetch(localUri, { signal: controller.signal });
+    } finally {
+      clearTimeout(fetchTimeout);
+    }
     const blob = await response.blob();
 
     // 2. Create Storage reference
@@ -92,6 +115,18 @@ export async function uploadFileToStorage(localUri, storagePath, onProgress) {
     const uploadTask = uploadBytesResumable(storageRef, blob);
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(uploadTimeout);
+        callback(value);
+      };
+      const uploadTimeout = setTimeout(() => {
+        uploadTask.cancel();
+        finish(reject, new Error('File upload timed out. Please try again.'));
+      }, 120000);
+
       uploadTask.on(
         'state_changed',
         (snapshot) => {
@@ -102,14 +137,14 @@ export async function uploadFileToStorage(localUri, storagePath, onProgress) {
         },
         (error) => {
           console.error('[ContentService] Storage upload error:', error);
-          reject(new Error(`File upload failed: ${error.message}`));
+          finish(reject, new Error(`File upload failed: ${error.message}`));
         },
         async () => {
           try {
             const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-            resolve(downloadUrl);
+            finish(resolve, downloadUrl);
           } catch (err) {
-            reject(err);
+            finish(reject, err);
           }
         }
       );
@@ -212,7 +247,7 @@ export async function getNotes(classroomId) {
     where('classroomId', '==', classroomId),
     orderBy('createdAt', 'desc')
   );
-  const snapshot = await getDocs(q);
+  const snapshot = await withTimeout(getDocs(q), 15000, 'Notes took too long to load. Please retry.');
   return snapshot.docs.map((d) => d.data());
 }
 
@@ -222,6 +257,14 @@ export async function getNotes(classroomId) {
 export async function uploadAssignment(classroomId, teacherId, data, onProgress) {
   if (!classroomId || !teacherId) throw new Error('Classroom context missing');
   if (!data.title?.trim()) throw new Error('Assignment title is required');
+  const classroomSnap = await readDoc(doc(db, COLLECTIONS.CLASSROOMS, classroomId));
+  if (!classroomSnap.exists() || classroomSnap.data()?.teacherId !== teacherId) {
+    throw new Error('Teacher does not own this classroom');
+  }
+  const resourceUrl = data.resourceUrl?.trim() || '';
+  if (resourceUrl && !/^https?:\/\//i.test(resourceUrl)) {
+    throw new Error('Resource link must be a valid HTTP or HTTPS URL');
+  }
 
   let finalFileUrl = data.linkUrl?.trim() || '';
   let finalFileName = data.fileAsset?.name || '';
@@ -246,6 +289,7 @@ export async function uploadAssignment(classroomId, teacherId, data, onProgress)
     deadline: data.deadline || null,
     maxMarks: Number(data.maxMarks) || 100,
     fileUrl: finalFileUrl,
+    resourceUrl,
     fileName: finalFileName,
     fileSize: finalFileSize,
     createdAt: serverTimestamp(),
@@ -259,11 +303,14 @@ export async function getAssignments(classroomId) {
   if (!classroomId) return [];
   const q = query(
     collection(db, COLLECTIONS.ASSIGNMENTS),
-    where('classroomId', '==', classroomId),
-    orderBy('createdAt', 'desc')
+    where('classroomId', '==', classroomId)
   );
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map((d) => d.data());
+  const snapshot = await withTimeout(getDocs(q), 15000, 'Assignments took too long to load. Please retry.');
+  return snapshot.docs
+    .map((d) => ({ ...d.data(), assignmentId: d.data().assignmentId || d.id }))
+    .sort((left, right) => (
+      (toValidDate(right.createdAt)?.getTime() || 0) - (toValidDate(left.createdAt)?.getTime() || 0)
+    ));
 }
 
 export async function submitAssignment(assignmentId, studentId, submissionInput, onProgress) {
@@ -271,15 +318,24 @@ export async function submitAssignment(assignmentId, studentId, submissionInput,
 
   // 1. Evaluate deadline server/timestamp logic
   const assignmentRef = doc(db, COLLECTIONS.ASSIGNMENTS, assignmentId);
-  const assignmentSnap = await getDoc(assignmentRef);
+  const assignmentSnap = await readDoc(assignmentRef);
   if (assignmentSnap.exists()) {
     const assignment = assignmentSnap.data();
-    if (assignment?.deadline) {
-      const deadlineMs = assignment.deadline.toDate ? assignment.deadline.toDate().getTime() : new Date(assignment.deadline).getTime();
-      if (!Number.isNaN(deadlineMs) && Date.now() > deadlineMs) {
-        throw new Error(`Submissions for this assignment closed on ${new Date(deadlineMs).toLocaleString()}`);
-      }
+    const classroomRef = doc(db, COLLECTIONS.CLASSROOMS, assignment.classroomId);
+    const classroomSnap = await readDoc(classroomRef);
+    if (!classroomSnap.exists() || classroomSnap.data()?.teacherId !== assignment.teacherId) {
+      throw new Error('Assignment classroom is unavailable');
     }
+    if (!Array.isArray(classroomSnap.data()?.studentIds) || !classroomSnap.data().studentIds.includes(studentId)) {
+      throw new Error('You are not enrolled in this assignment classroom');
+    }
+    const deadline = getAssignmentDeadline(assignment.deadline);
+    if (deadline && Date.now() >= deadline.getTime()) {
+      throw new Error(`Submissions for this assignment closed on ${formatDateTime(deadline)}`);
+    }
+    if (assignment.classroomId !== classroomSnap.id) throw new Error('Assignment classroom mismatch');
+  } else {
+    throw new Error('Assignment not found');
   }
 
   let submissionUrl = null;
@@ -308,6 +364,11 @@ export async function submitAssignment(assignmentId, studentId, submissionInput,
   }
 
   const existingSub = await getStudentSubmission(assignmentId, studentId);
+  const finalAssignment = assignmentSnap.data();
+  const deadline = getAssignmentDeadline(finalAssignment.deadline);
+  if (deadline && Date.now() >= deadline.getTime()) {
+    throw new Error(`Submissions for this assignment closed on ${formatDateTime(deadline)}`);
+  }
   const subRef = existingSub?.submissionId
     ? doc(db, 'submissions', existingSub.submissionId)
     : doc(collection(db, 'submissions'));
@@ -316,6 +377,7 @@ export async function submitAssignment(assignmentId, studentId, submissionInput,
     submissionId: subRef.id,
     assignmentId,
     studentId,
+    classroomId: finalAssignment.classroomId,
     fileUrl: fileUrl || existingSub?.fileUrl || null,
     submissionUrl: submissionUrl || fileUrl || existingSub?.submissionUrl,
     fileName: fileName || existingSub?.fileName || 'submission',
@@ -335,20 +397,28 @@ export async function getStudentSubmission(assignmentId, studentId) {
     where('assignmentId', '==', assignmentId),
     where('studentId', '==', studentId)
   );
-  const snapshot = await getDocs(q);
+  const snapshot = await withTimeout(getDocs(q), 15000, 'Submission status took too long to load. Please retry.');
   if (snapshot.empty) return null;
   return snapshot.docs[0].data();
 }
 
-export async function getAssignmentSubmissionsForTeacher(assignmentId, classroomId) {
-  if (!assignmentId || !classroomId) return [];
-  const students = await getClassroomStudents(classroomId);
+export async function getAssignmentSubmissionsForTeacher(assignmentId, classroomId, teacherId) {
+  if (!assignmentId || !classroomId || !teacherId) return [];
+  const students = await withTimeout(getClassroomStudents(classroomId), 15000, 'Student roster took too long to load. Please retry.');
+  const [assignmentSnap, classroomSnap] = await Promise.all([
+    readDoc(doc(db, COLLECTIONS.ASSIGNMENTS, assignmentId)),
+    readDoc(doc(db, COLLECTIONS.CLASSROOMS, classroomId)),
+  ]);
+  if (!assignmentSnap.exists() || assignmentSnap.data()?.classroomId !== classroomId
+    || assignmentSnap.data()?.teacherId !== teacherId || classroomSnap.data()?.teacherId !== teacherId) {
+    throw new Error('Assignment does not belong to this classroom');
+  }
 
   const q = query(
     collection(db, 'submissions'),
     where('assignmentId', '==', assignmentId)
   );
-  const snapshot = await getDocs(q);
+  const snapshot = await readDocs(q);
   const submissionsMap = {};
   snapshot.docs.forEach((docSnap) => {
     const data = docSnap.data();

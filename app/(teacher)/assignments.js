@@ -15,7 +15,7 @@ import {
   deleteResource,
   getAssignmentSubmissionsForTeacher,
 } from '../../src/services/contentService';
-import { formatDate, formatDateTime } from '../../src/utils/helpers';
+import { formatDateTime, toValidDate } from '../../src/utils/helpers';
 import { THEME_COLORS, COLLECTIONS } from '../../src/constants';
 
 export default function TeacherTasksScreen() {
@@ -26,12 +26,16 @@ export default function TeacherTasksScreen() {
   const [classrooms, setClassrooms] = useState([]);
   const [selectedClass, setSelectedClass] = useState(null);
   const [tasks, setTasks] = useState([]);
+  const [loadingClassrooms, setLoadingClassrooms] = useState(true);
+  const [classroomError, setClassroomError] = useState(null);
   const [loadingTasks, setLoadingTasks] = useState(false);
+  const [taskError, setTaskError] = useState(null);
 
   // Add Task Toggle & Form State
   const [showAddForm, setShowAddForm] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [resourceUrl, setResourceUrl] = useState('');
   const [deadlineDate, setDeadlineDate] = useState('');
   const [deadlineTime, setDeadlineTime] = useState('23:59');
   const [maxMarks, setMaxMarks] = useState('100');
@@ -48,9 +52,13 @@ export default function TeacherTasksScreen() {
 
   // Load classrooms on focus
   const loadClassroomsData = useCallback(async () => {
-    if (!uid) return;
+    if (!uid) {
+      setLoadingClassrooms(false);
+      return;
+    }
 
     try {
+      setClassroomError(null);
       const classes = await getTeacherClassrooms(uid);
       const safeClasses = classes || [];
       setClassrooms(safeClasses);
@@ -62,21 +70,34 @@ export default function TeacherTasksScreen() {
           }
           return safeClasses[0];
         });
+      } else {
+        setSelectedClass(null);
+        setTasks([]);
       }
     } catch (error) {
       console.log('Load teacher classrooms error:', error);
+      setClassroomError(error.message || 'Failed to load classrooms');
+    } finally {
+      setLoadingClassrooms(false);
     }
   }, [uid]);
 
   // Load tasks whenever selected classroom changes
   const loadTasksForClass = useCallback(async (classroomId) => {
-    if (!classroomId) return;
+    if (!classroomId) {
+      setTasks([]);
+      setLoadingTasks(false);
+      return;
+    }
     try {
+      setTaskError(null);
       setLoadingTasks(true);
       const data = await getAssignments(classroomId);
       setTasks(data || []);
     } catch (error) {
       console.log('Load tasks error:', error);
+      setTasks([]);
+      setTaskError(error.message || 'Failed to load tasks');
     } finally {
       setLoadingTasks(false);
     }
@@ -98,8 +119,8 @@ export default function TeacherTasksScreen() {
 
   const handleSelectClass = (cls) => {
     setSelectedClass(cls);
+    setTasks([]);
     setMenuVisible(false);
-    loadTasksForClass(cls.classroomId);
   };
 
   const handlePickFile = async () => {
@@ -155,6 +176,7 @@ export default function TeacherTasksScreen() {
         {
           title: title.trim(),
           description: description.trim(),
+          resourceUrl: resourceUrl.trim(),
           deadline: parsedDeadline,
           maxMarks: parseInt(maxMarks, 10) || 100,
           fileAsset: selectedFile,
@@ -167,6 +189,7 @@ export default function TeacherTasksScreen() {
       // Reset form
       setTitle('');
       setDescription('');
+      setResourceUrl('');
       setDeadlineDate('');
       setDeadlineTime('23:59');
       setMaxMarks('100');
@@ -209,7 +232,7 @@ export default function TeacherTasksScreen() {
     setLoadingSubmissions(true);
 
     try {
-      const list = await getAssignmentSubmissionsForTeacher(taskId, selectedClass.classroomId);
+      const list = await getAssignmentSubmissionsForTeacher(taskId, selectedClass.classroomId, uid);
       setStudentSubmissions(list);
     } catch (err) {
       console.log('Error fetching submissions:', err);
@@ -353,6 +376,20 @@ export default function TeacherTasksScreen() {
               textColor={colors.text}
             />
 
+            <TextInput
+              label="Resource / Reference Link (URL)"
+              placeholder="https://example.com/resource"
+              value={resourceUrl}
+              onChangeText={setResourceUrl}
+              mode="outlined"
+              autoCapitalize="none"
+              keyboardType="url"
+              style={styles.input}
+              outlineColor={colors.border}
+              activeOutlineColor={colors.primary}
+              textColor={colors.text}
+            />
+
             {/* Task File Attachment Box */}
             <TouchableOpacity
               style={[
@@ -465,8 +502,20 @@ export default function TeacherTasksScreen() {
         </Text>
       </View>
 
-      {loadingTasks ? (
+      {loadingClassrooms && classrooms.length === 0 ? (
         <ActivityIndicator size="medium" color={colors.primary} style={{ marginVertical: 30 }} />
+      ) : classroomError ? (
+        <View style={{ alignItems: 'center', paddingVertical: 20 }}>
+          <Text style={{ color: THEME_COLORS.danger, textAlign: 'center' }}>{classroomError}</Text>
+          <Button mode="text" onPress={loadClassroomsData} textColor={colors.primary}>Retry</Button>
+        </View>
+      ) : loadingTasks ? (
+        <ActivityIndicator size="medium" color={colors.primary} style={{ marginVertical: 30 }} />
+      ) : taskError ? (
+        <View style={{ alignItems: 'center', paddingVertical: 20 }}>
+          <Text style={{ color: THEME_COLORS.danger, textAlign: 'center' }}>{taskError}</Text>
+          <Button mode="text" onPress={() => loadTasksForClass(selectedClass?.classroomId)} textColor={colors.primary}>Retry</Button>
+        </View>
       ) : tasks.length === 0 ? (
         <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
           <Card.Content style={{ alignItems: 'center', paddingVertical: 24, gap: 8 }}>
@@ -484,10 +533,8 @@ export default function TeacherTasksScreen() {
           const taskId = item.assignmentId || item.id;
           let isPastDeadline = false;
           if (item.deadline) {
-            const deadlineMs = item.deadline.toDate ? item.deadline.toDate().getTime() : new Date(item.deadline).getTime();
-            if (!Number.isNaN(deadlineMs) && Date.now() > deadlineMs) {
-              isPastDeadline = true;
-            }
+            const deadline = toValidDate(item.deadline);
+            isPastDeadline = !deadline || Date.now() >= deadline.getTime();
           }
 
           return (
@@ -545,6 +592,17 @@ export default function TeacherTasksScreen() {
               </Card.Content>
 
               <Card.Actions style={styles.cardActions}>
+                {item.resourceUrl && (
+                  <Button
+                    mode="outlined"
+                    icon="open-in-new"
+                    textColor={colors.primary}
+                    style={{ borderColor: colors.primary }}
+                    onPress={() => handleOpenUrl(item.resourceUrl)}
+                  >
+                    Open Link
+                  </Button>
+                )}
                 {item.fileUrl && (
                   <Button
                     mode="outlined"
