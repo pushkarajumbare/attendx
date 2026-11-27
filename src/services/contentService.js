@@ -34,6 +34,7 @@ import { Linking, Alert } from 'react-native';
 import { db, storage } from '../config/firebase';
 import { COLLECTIONS } from '../constants';
 import { getClassroomStudents } from './classroomService';
+import { notifyAssignmentSubmitted, notifyAssignmentUploaded } from './notificationService';
 import { toValidDate, formatDateTime, withTimeout } from '../utils/helpers';
 
 function getAssignmentDeadline(deadline) {
@@ -296,6 +297,9 @@ export async function uploadAssignment(classroomId, teacherId, data, onProgress)
   };
 
   await setDoc(assignmentRef, assignment);
+
+  notifyAssignmentUploaded(assignment, classroomSnap.data()).catch(() => {});
+
   return assignment;
 }
 
@@ -387,6 +391,14 @@ export async function submitAssignment(assignmentId, studentId, submissionInput,
   };
 
   await setDoc(subRef, submission, { merge: true });
+
+  readDoc(doc(db, COLLECTIONS.USERS, studentId))
+    .then((uSnap) => {
+      const studentName = uSnap.exists() ? (uSnap.data()?.name || uSnap.data()?.displayName || 'Student') : 'Student';
+      return notifyAssignmentSubmitted(submission, finalAssignment, studentName);
+    })
+    .catch(() => notifyAssignmentSubmitted(submission, finalAssignment, 'Student').catch(() => {}));
+
   return submission;
 }
 
@@ -416,13 +428,15 @@ export async function getAssignmentSubmissionsForTeacher(assignmentId, classroom
 
   const q = query(
     collection(db, 'submissions'),
-    where('assignmentId', '==', assignmentId)
+    where('classroomId', '==', classroomId)
   );
   const snapshot = await readDocs(q);
   const submissionsMap = {};
   snapshot.docs.forEach((docSnap) => {
     const data = docSnap.data();
-    submissionsMap[data.studentId] = data;
+    if (data?.assignmentId === assignmentId) {
+      submissionsMap[data.studentId] = data;
+    }
   });
 
   return students.map((std) => {
@@ -477,11 +491,14 @@ export async function getQuestionBank(classroomId) {
   if (!classroomId) return [];
   const q = query(
     collection(db, COLLECTIONS.QUESTION_BANK),
-    where('classroomId', '==', classroomId),
-    orderBy('createdAt', 'desc')
+    where('classroomId', '==', classroomId)
   );
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map((d) => d.data());
+  const snapshot = await readDocs(q);
+  return snapshot.docs
+    .map((d) => d.data())
+    .sort((left, right) => (
+      (toValidDate(right.createdAt)?.getTime() || 0) - (toValidDate(left.createdAt)?.getTime() || 0)
+    ));
 }
 
 // ===============================================
@@ -509,11 +526,14 @@ export async function getAnnouncements(classroomId) {
   if (!classroomId) return [];
   const q = query(
     collection(db, COLLECTIONS.ANNOUNCEMENTS),
-    where('classroomId', '==', classroomId),
-    orderBy('createdAt', 'desc')
+    where('classroomId', '==', classroomId)
   );
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map((d) => d.data());
+  const snapshot = await readDocs(q);
+  return snapshot.docs
+    .map((d) => d.data())
+    .sort((left, right) => (
+      (toValidDate(right.createdAt)?.getTime() || 0) - (toValidDate(left.createdAt)?.getTime() || 0)
+    ));
 }
 
 // ===============================================

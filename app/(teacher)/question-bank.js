@@ -98,7 +98,7 @@ export default function TeacherQuestionBankScreen() {
       setDescription('');
       setLinkUrl('');
       setSelectedFile(null);
-      Alert.alert('Success 🎉', 'Question bank resource uploaded');
+      Alert.alert('Upload Complete', 'Question bank resource uploaded.');
     } catch (err) {
       Alert.alert('Error', err.message || 'Upload failed');
     } finally {
@@ -160,7 +160,7 @@ export default function TeacherQuestionBankScreen() {
       <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
         <Card.Content>
           <View style={styles.cardHeader}>
-            <MaterialCommunityIcons name="help-box-outline" size={22} color={colors.primary} />
+            <MaterialCommunityIcons name="file-question-outline" size={22} color={colors.primary} />
             <Text variant="titleMedium" style={{ fontWeight: '700', color: colors.text }}>
               Upload Question Bank / PYQ
             </Text>
@@ -194,7 +194,7 @@ export default function TeacherQuestionBankScreen() {
               styles.filePickerBox,
               {
                 borderColor: selectedFile ? colors.primary : colors.border,
-                backgroundColor: isDark ? colors.surfaceAccent : (selectedFile ? THEME_COLORS.primaryLight : '#F9FAFB'),
+                backgroundColor: selectedFile ? colors.primarySoft : colors.surfaceVariant,
               },
             ]}
             onPress={handlePickFile}

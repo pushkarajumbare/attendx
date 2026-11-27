@@ -71,7 +71,7 @@ export default function AnnouncementsScreen() {
 
       setTitle('');
       setMessage('');
-      Alert.alert('Success 🎉', 'Announcement posted to classroom members');
+      Alert.alert('Posted', 'Announcement posted to classroom members.');
     } catch (error) {
       Alert.alert('Error', error.message || 'Failed to post announcement');
     } finally {

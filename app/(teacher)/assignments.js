@@ -197,7 +197,7 @@ export default function TeacherTasksScreen() {
       setUploadProgress(null);
       setShowAddForm(false);
 
-      Alert.alert('Task Created 🎉', `"${title.trim()}" published for ${selectedClass.className}!`);
+      Alert.alert('Task Created', `"${title.trim()}" published for ${selectedClass.className}!`);
     } catch (error) {
       Alert.alert('Upload Error', error.message || 'Failed to create task');
     } finally {
@@ -306,8 +306,8 @@ export default function TeacherTasksScreen() {
                       onPress={() => handleSelectClass(cls)}
                       style={{
                         backgroundColor: isSelected
-                          ? (isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight)
-                          : (isDark ? colors.surfaceVariant : '#F3F4F6'),
+                          ? colors.primarySoft
+                          : colors.surfaceVariant,
                       }}
                       textStyle={{
                         color: isSelected ? colors.primary : colors.textSecondary,
@@ -396,7 +396,7 @@ export default function TeacherTasksScreen() {
                 styles.filePickerBox,
                 {
                   borderColor: selectedFile ? colors.primary : colors.border,
-                  backgroundColor: isDark ? colors.surfaceAccent : (selectedFile ? THEME_COLORS.primaryLight : '#F9FAFB'),
+                  backgroundColor: selectedFile ? colors.primarySoft : colors.surfaceVariant,
                 },
               ]}
               onPress={handlePickFile}
@@ -674,7 +674,7 @@ export default function TeacherTasksScreen() {
 
                         <Chip
                           style={{
-                            backgroundColor: isSubmitted ? THEME_COLORS.successLight : (isDark ? colors.surfaceVariant : '#F3F4F6'),
+                            backgroundColor: isSubmitted ? THEME_COLORS.successLight : colors.surfaceVariant,
                           }}
                           textStyle={{
                             fontSize: 11,
@@ -687,10 +687,15 @@ export default function TeacherTasksScreen() {
                       </View>
 
                       {isSubmitted && sub.submissionUrl && (
-                        <View style={{ marginTop: 6, padding: 8, borderRadius: 8, backgroundColor: isDark ? colors.surfaceVariant : '#F8FAFC' }}>
-                          <TouchableOpacity onPress={() => handleOpenUrl(sub.submissionUrl)}>
+                        <View style={{ marginTop: 6, padding: 8, borderRadius: 8, backgroundColor: colors.surfaceVariant }}>
+                          <TouchableOpacity
+                            onPress={() => handleOpenUrl(sub.submissionUrl)}
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
+                          >
+                            <MaterialCommunityIcons name="link-variant" size={14} color={colors.primary} />
                             <Text
                               style={{
+                                flex: 1,
                                 fontSize: 12,
                                 color: colors.primary,
                                 textDecorationLine: 'underline',
@@ -698,7 +703,7 @@ export default function TeacherTasksScreen() {
                               }}
                               numberOfLines={2}
                             >
-                              🔗 {sub.submissionUrl}
+                              {sub.submissionUrl}
                             </Text>
                           </TouchableOpacity>
                           {sub.submittedAt && (

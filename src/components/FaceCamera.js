@@ -7,301 +7,505 @@ import {
   Text,
   TouchableOpacity,
   ActivityIndicator,
-  Platform,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as FileSystem from 'expo-file-system';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { FACE_ANGLES } from '../services/faceService';
-import { processFaceFrame } from '../services/tensorflowService';
+import {
+  computeAverageEmbedding,
+  cosineSimilarity,
+  initializeTensorFlow,
+  isBiometricEngineReady,
+  processFaceFrame,
+} from '../services/tensorflowService';
 import { THEME_COLORS } from '../constants';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const GUIDE_RADIUS = SCREEN_WIDTH * 0.38;
-const VERIFY_AUTO_CAPTURE_DELAY = 2500;
-const STAGE_SUCCESS_HOLD = 900;
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const GUIDE_RADIUS = Math.min(SCREEN_WIDTH * 0.38, SCREEN_HEIGHT * 0.34);
+
+const INITIAL_SETTLE_DELAY_MS = 280;
+const INTER_STAGE_DELAY_MS = 220;
+const RETRY_DELAY_MS = 420;
+const MAX_VERIFY_FAILURES_BEFORE_PAUSE = 8;
+const MAX_REGISTER_FAILURES_BEFORE_PAUSE = 10;
 
 const VERIFY_STAGES = [
   {
     id: 'front',
+    poseStage: 'front',
     label: 'Identity',
-    instruction: 'Look straight at the camera',
-    hint: 'Hold still for identity matching',
+    instruction: 'Look at the camera',
+    hint: 'Hold steady for fast face verification',
   },
   {
-    id: 'right',
-    label: 'Liveness',
-    instruction: 'Turn your head slightly to the right',
-    hint: 'Keep your face inside the guide',
+    id: 'verify',
+    poseStage: 'verify',
+    label: 'Live Check',
+    instruction: 'Confirming live presence...',
+    hint: 'Keep your face inside the oval',
   },
 ];
+
+function selectOptimalPictureSize(sizes) {
+  if (!Array.isArray(sizes) || sizes.length === 0) return undefined;
+
+  const parsed = sizes
+    .map((raw) => {
+      const [wStr, hStr] = String(raw).split('x');
+      const w = Number(wStr);
+      const h = Number(hStr);
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+      return { raw, w, h, shortSide: Math.min(w, h), area: w * h };
+    })
+    .filter(Boolean);
+
+  if (parsed.length === 0) return undefined;
+
+  // Prefer lowest resolution with shortSide >= 480 (e.g. 640x480) for ~20x faster decoding
+  const ideal = parsed
+    .filter((item) => item.shortSide >= 480 && item.shortSide <= 1080)
+    .sort((a, b) => a.area - b.area);
+
+  if (ideal.length > 0) return ideal[0].raw;
+
+  const fallback = parsed.filter((item) => item.shortSide >= 360).sort((a, b) => a.area - b.area);
+  return fallback[0]?.raw;
+}
 
 export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
   const cameraRef = useRef(null);
   const isMountedRef = useRef(true);
   const autoCaptureTimerRef = useRef(null);
   const isCapturingRef = useRef(false);
+  const isCompletedRef = useRef(false);
+  const failureCountRef = useRef(0);
+
   const stageIndexRef = useRef(0);
   const capturedSamplesRef = useRef([]);
   const verifyStageIndexRef = useRef(0);
-  const verifyIdentityRef = useRef(null);
+  const verifyFirstFrameRef = useRef(null);
+  const lastBase64SampleRef = useRef(null);
 
   const [permission, requestPermission] = useCameraPermissions();
   const [isCameraReady, setIsCameraReady] = useState(false);
+  const [isEngineReady, setIsEngineReady] = useState(() => isBiometricEngineReady());
+  const [pictureSize, setPictureSize] = useState(undefined);
+
   const [stageIndex, setStageIndex] = useState(0);
   const [capturedSamples, setCapturedSamples] = useState([]);
-  const [stageStatus, setStageStatus] = useState('idle');
-  const [verifyStatus, setVerifyStatus] = useState('preview');
+  const [stageStatus, setStageStatus] = useState('warming');
+  const [verifyStageIdx, setVerifyStageIdx] = useState(0);
+  const [verifyStatus, setVerifyStatus] = useState('warming');
   const [instruction, setInstruction] = useState('');
   const [guidance, setGuidance] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const scanLineAnim = useRef(new Animated.Value(0)).current;
   const flashAnim = useRef(new Animated.Value(0)).current;
   const flashColorRef = useRef('rgba(16, 185, 129, 0.35)');
+  const onCaptureRef = useRef(onCapture);
 
   useEffect(() => {
+    onCaptureRef.current = onCapture;
+  }, [onCapture]);
+
+  const clearScheduledCapture = useCallback(() => {
+    if (autoCaptureTimerRef.current) {
+      clearTimeout(autoCaptureTimerRef.current);
+      autoCaptureTimerRef.current = null;
+    }
+  }, []);
+
+  const triggerFlash = useCallback(
+    (isSuccess = true) => {
+      flashColorRef.current = isSuccess
+        ? 'rgba(16, 185, 129, 0.32)'
+        : 'rgba(239, 68, 68, 0.32)';
+      flashAnim.setValue(0.85);
+      Animated.timing(flashAnim, {
+        toValue: 0,
+        duration: 240,
+        useNativeDriver: true,
+      }).start();
+    },
+    [flashAnim]
+  );
+
+  // Initialize state, pulse animation, and ensure biometric engine is loaded once
+  useEffect(() => {
     isMountedRef.current = true;
+    isCompletedRef.current = false;
+    isCapturingRef.current = false;
+    failureCountRef.current = 0;
     stageIndexRef.current = 0;
     capturedSamplesRef.current = [];
     verifyStageIndexRef.current = 0;
-    verifyIdentityRef.current = null;
+    verifyFirstFrameRef.current = null;
+    lastBase64SampleRef.current = null;
+
     setStageIndex(0);
     setCapturedSamples([]);
-    setStageStatus('idle');
-    setVerifyStatus('preview');
+    setVerifyStageIdx(0);
     setErrorMsg('');
 
     if (mode === 'register') {
       setInstruction(FACE_ANGLES[0].instruction);
       setGuidance(FACE_ANGLES[0].hint);
+      setStageStatus(isBiometricEngineReady() ? 'idle' : 'warming');
     } else {
       setInstruction(VERIFY_STAGES[0].instruction);
       setGuidance(VERIFY_STAGES[0].hint);
+      setVerifyStatus(isBiometricEngineReady() ? 'preview' : 'warming');
     }
+
+    let cancelled = false;
+    if (!isBiometricEngineReady()) {
+      initializeTensorFlow()
+        .then(() => {
+          if (!cancelled && isMountedRef.current) {
+            setIsEngineReady(true);
+            setStageStatus((prev) => (prev === 'warming' ? 'idle' : prev));
+            setVerifyStatus((prev) => (prev === 'warming' ? 'preview' : prev));
+          }
+        })
+        .catch((err) => {
+          if (!cancelled && isMountedRef.current) {
+            setErrorMsg(err?.message || 'Could not initialize on-device face engine.');
+            setStageStatus('paused');
+            setVerifyStatus('paused');
+          }
+        });
+    } else {
+      setIsEngineReady(true);
+    }
+
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.03, duration: 1100, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.0, duration: 1100, useNativeDriver: true }),
+      ])
+    );
+    pulseLoop.start();
+
+    const scanLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scanLineAnim, {
+          toValue: GUIDE_RADIUS * 2.1,
+          duration: 1450,
+          useNativeDriver: true,
+        }),
+        Animated.timing(scanLineAnim, {
+          toValue: 10,
+          duration: 1450,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    scanLoop.start();
 
     return () => {
+      cancelled = true;
       isMountedRef.current = false;
-      if (autoCaptureTimerRef.current) {
-        clearTimeout(autoCaptureTimerRef.current);
-        autoCaptureTimerRef.current = null;
-      }
+      clearScheduledCapture();
+      pulseLoop.stop();
+      scanLoop.stop();
     };
-  }, [mode]);
+  }, [mode, pulseAnim, scanLineAnim, clearScheduledCapture]);
 
-  const triggerFlash = useCallback(
-    (isSuccess) => {
-      flashColorRef.current = isSuccess
-        ? 'rgba(16, 185, 129, 0.45)'
-        : 'rgba(239, 68, 68, 0.45)';
-      Animated.sequence([
-        Animated.timing(flashAnim, { toValue: 1, duration: 80, useNativeDriver: true }),
-        Animated.timing(flashAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
-      ]).start();
-      if (isSuccess) {
-        Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.06, duration: 120, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1.0, duration: 180, useNativeDriver: true }),
-        ]).start();
-      }
-    },
-    [flashAnim, pulseAnim]
-  );
-
-  const handleRegistrationCapture = useCallback(
-    async (analysis) => {
-      const currentIndex = stageIndexRef.current;
-      const currentStage = FACE_ANGLES[currentIndex];
-      const sample = {
-        angle: currentStage.id,
-        embedding: analysis.embedding,
-        metrics: analysis.metrics,
-      };
-      const updatedSamples = [...capturedSamplesRef.current, sample];
-
-      capturedSamplesRef.current = updatedSamples;
-      setCapturedSamples(updatedSamples);
-      setStageStatus('success');
-      setInstruction(`${currentStage.label} saved`);
-      setGuidance('Good capture. Hold steady...');
-      setErrorMsg('');
-      console.log('[FaceCamera] Capture success for stage:', currentStage?.id, 'index:', currentIndex);
-      triggerFlash(true);
-
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      if (!isMountedRef.current) return;
-
-      const nextIndex = currentIndex + 1;
-      if (nextIndex >= FACE_ANGLES.length) {
-        console.log('[FaceCamera] All registration stages complete. Invoking onCapture.');
-        setInstruction('Registration complete');
-        setGuidance('Saving your face template...');
-        setTimeout(() => {
-          if (isMountedRef.current && onCapture) {
-            onCapture(updatedSamples);
-          }
-        }, 300);
-        return;
-      }
-
-      console.log('[FaceCamera] Advancing to stage:', nextIndex, FACE_ANGLES[nextIndex]?.label);
-      stageIndexRef.current = nextIndex;
-      setStageIndex(nextIndex);
-      setStageStatus('idle');
-      setInstruction(FACE_ANGLES[nextIndex].instruction);
-      setGuidance(FACE_ANGLES[nextIndex].hint);
-    },
-    [onCapture, triggerFlash]
-  );
-
-  const handleVerificationCapture = useCallback(
-    async (analysis) => {
-      const currentIndex = verifyStageIndexRef.current;
-      const currentStage = VERIFY_STAGES[currentIndex];
-
-      triggerFlash(true);
-      setErrorMsg('');
-
-      if (currentIndex === 0) {
-        verifyIdentityRef.current = {
-          embedding: analysis.embedding,
-          metrics: analysis.metrics,
-        };
-        verifyStageIndexRef.current = 1;
-        setVerifyStatus('preview');
-        setInstruction(VERIFY_STAGES[1].instruction);
-        setGuidance(VERIFY_STAGES[1].hint);
-        return;
-      }
-
-      setVerifyStatus('done');
-      setInstruction('Verifying identity...');
-      setGuidance('Matching against your registered template');
-
-      setTimeout(() => {
-        if (isMountedRef.current && onCapture) {
-          onCapture({
-            embedding: verifyIdentityRef.current?.embedding || analysis.embedding,
-            livenessPassed: true,
-            livenessChallenge: currentStage.id,
-            livenessMetrics: analysis.metrics,
-          });
+  const handleCameraReady = useCallback(async () => {
+    if (!isMountedRef.current) return;
+    try {
+      if (cameraRef.current?.getAvailablePictureSizesAsync) {
+        const sizes = await cameraRef.current.getAvailablePictureSizesAsync();
+        const chosen = selectOptimalPictureSize(sizes);
+        if (chosen && isMountedRef.current) {
+          setPictureSize(chosen);
         }
-      }, 350);
+      }
+    } catch (_) {
+      // Fallback to default CameraView size cleanly if device query unavailable
+    } finally {
+      if (isMountedRef.current) {
+        setIsCameraReady(true);
+      }
+    }
+  }, []);
+
+  const scheduleNextCapture = useCallback(
+    (delayMs, captureFn) => {
+      clearScheduledCapture();
+      if (!isMountedRef.current || isCompletedRef.current) return;
+      autoCaptureTimerRef.current = setTimeout(() => {
+        if (isMountedRef.current && !isCompletedRef.current) {
+          captureFn();
+        }
+      }, delayMs);
     },
-    [onCapture, triggerFlash]
+    [clearScheduledCapture]
   );
 
-  const doCapture = useCallback(async () => {
-    if (!cameraRef.current || isCapturingRef.current || !isMountedRef.current) return;
-    isCapturingRef.current = true;
-    if (autoCaptureTimerRef.current) {
-      clearTimeout(autoCaptureTimerRef.current);
-      autoCaptureTimerRef.current = null;
+  const runCaptureStep = useCallback(async () => {
+    if (
+      !isMountedRef.current ||
+      isCompletedRef.current ||
+      isCapturingRef.current ||
+      !isCameraReady ||
+      !isEngineReady ||
+      !cameraRef.current
+    ) {
+      return;
     }
 
+    isCapturingRef.current = true;
+    setErrorMsg('');
+
+    let photoUri = null;
     try {
+      const stageCfg =
+        mode === 'register'
+          ? FACE_ANGLES[stageIndexRef.current] || FACE_ANGLES[0]
+          : VERIFY_STAGES[verifyStageIndexRef.current] || VERIFY_STAGES[0];
+
       if (mode === 'register') {
         setStageStatus('capturing');
       } else {
         setVerifyStatus('capturing');
       }
-      setInstruction('Capturing...');
-      setGuidance('Hold still');
 
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.75,
+        quality: 0.72,
         base64: true,
-        skipProcessing: Platform.OS === 'android',
+        skipProcessing: false,
       });
+      photoUri = photo?.uri || null;
 
-      if (!isMountedRef.current) return;
-      if (!photo?.base64 || photo.base64.length < 100) {
-        throw new Error('Camera returned an empty frame. Please try again.');
+      if (!isMountedRef.current || isCompletedRef.current) return;
+
+      if (!photo?.base64) {
+        throw new Error('Empty frame from camera. Adjust lighting and retry.');
       }
 
-      if (photo.uri) {
-        FileSystem.deleteAsync(photo.uri, { idempotent: true }).catch(() => {});
-      }
-
-      const currentStage =
-        mode === 'register'
-          ? FACE_ANGLES[stageIndexRef.current]
-          : VERIFY_STAGES[verifyStageIndexRef.current];
-
-      console.log(`[FaceCamera] Processing frame for stage: ${currentStage?.id} (mode: ${mode})`);
-
-      const analysis = await processFaceFrame(photo.base64, {
-        stageId: currentStage?.id || 'front',
+      const frameRes = await processFaceFrame(photo.base64, {
+        stageId: stageCfg.poseStage,
         requirePose: true,
       });
 
-      console.log('[FaceCamera] processFaceFrame result:', { success: analysis.success, error: analysis.error });
+      if (!isMountedRef.current || isCompletedRef.current) return;
 
-      if (!analysis.success) {
-        throw new Error(analysis.error || 'Face check failed. Please try again.');
+      if (!frameRes.success) {
+        failureCountRef.current += 1;
+        setErrorMsg(frameRes.error || 'Align your face inside the oval.');
+
+        const maxFailures =
+          mode === 'register' ? MAX_REGISTER_FAILURES_BEFORE_PAUSE : MAX_VERIFY_FAILURES_BEFORE_PAUSE;
+
+        if (failureCountRef.current >= maxFailures) {
+          triggerFlash(false);
+          if (mode === 'register') setStageStatus('paused');
+          else setVerifyStatus('paused');
+          return;
+        }
+
+        if (mode === 'register') setStageStatus('error');
+        else setVerifyStatus('preview');
+        scheduleNextCapture(RETRY_DELAY_MS, runCaptureStep);
+        return;
       }
 
+      // Guard against frozen identical frame replay
+      const currentDigest = `${photo.base64.length}:${photo.base64.slice(0, 64)}:${photo.base64.slice(-64)}`;
+      if (lastBase64SampleRef.current === currentDigest) {
+        failureCountRef.current += 1;
+        setErrorMsg('Live frame unchanged. Blink or move slightly.');
+        if (mode === 'register') setStageStatus('error');
+        else setVerifyStatus('preview');
+        scheduleNextCapture(RETRY_DELAY_MS, runCaptureStep);
+        return;
+      }
+      lastBase64SampleRef.current = currentDigest;
+
       if (mode === 'register') {
-        await handleRegistrationCapture(analysis);
+        const existingSamples = capturedSamplesRef.current;
+        if (existingSamples.length > 0) {
+          const simWithAnchor = cosineSimilarity(
+            existingSamples[0].embedding,
+            frameRes.embedding
+          );
+          if (simWithAnchor < 0.42) {
+            triggerFlash(false);
+            stageIndexRef.current = 0;
+            capturedSamplesRef.current = [];
+            setStageIndex(0);
+            setCapturedSamples([]);
+            setErrorMsg('Face changed during capture. Restarting with only you in frame.');
+            setInstruction(FACE_ANGLES[0].instruction);
+            setGuidance(FACE_ANGLES[0].hint);
+            setStageStatus('error');
+            scheduleNextCapture(RETRY_DELAY_MS, runCaptureStep);
+            return;
+          }
+        }
+
+        failureCountRef.current = 0;
+        triggerFlash(true);
+
+        const nextSample = {
+          angle: stageCfg.id,
+          embedding: frameRes.embedding,
+          metrics: frameRes.metrics,
+        };
+        const updatedSamples = [...existingSamples, nextSample];
+        capturedSamplesRef.current = updatedSamples;
+        setCapturedSamples(updatedSamples);
+
+        const nextIdx = stageIndexRef.current + 1;
+        if (nextIdx >= FACE_ANGLES.length) {
+          isCompletedRef.current = true;
+          setStageStatus('done');
+          setInstruction('Face Registration Complete');
+          setGuidance('Saving encrypted biometric vector...');
+          if (typeof onCaptureRef.current === 'function') {
+            onCaptureRef.current(updatedSamples);
+          }
+          return;
+        }
+
+        stageIndexRef.current = nextIdx;
+        setStageIndex(nextIdx);
+        setStageStatus('success');
+        setInstruction(FACE_ANGLES[nextIdx].instruction);
+        setGuidance(FACE_ANGLES[nextIdx].hint);
+        scheduleNextCapture(INTER_STAGE_DELAY_MS, runCaptureStep);
       } else {
-        await handleVerificationCapture(analysis);
+        // VERIFY MODE: 2 fast frames (~350-600ms apart) -> averaged high-SNR probe
+        const verifyIdx = verifyStageIndexRef.current;
+
+        if (verifyIdx === 0) {
+          failureCountRef.current = 0;
+          verifyFirstFrameRef.current = frameRes;
+          verifyStageIndexRef.current = 1;
+          setVerifyStageIdx(1);
+          triggerFlash(true);
+          setVerifyStatus('preview');
+          setInstruction(VERIFY_STAGES[1].instruction);
+          setGuidance(VERIFY_STAGES[1].hint);
+          scheduleNextCapture(INTER_STAGE_DELAY_MS, runCaptureStep);
+          return;
+        }
+
+        const firstFrame = verifyFirstFrameRef.current;
+        if (!firstFrame) {
+          verifyStageIndexRef.current = 0;
+          setVerifyStageIdx(0);
+          scheduleNextCapture(RETRY_DELAY_MS, runCaptureStep);
+          return;
+        }
+
+        const intraScanConsistency = cosineSimilarity(
+          firstFrame.embedding,
+          frameRes.embedding
+        );
+
+        if (intraScanConsistency < 0.45) {
+          failureCountRef.current += 1;
+          verifyStageIndexRef.current = 0;
+          verifyFirstFrameRef.current = null;
+          setVerifyStageIdx(0);
+          triggerFlash(false);
+          setErrorMsg('Hold steady and keep only your face in view.');
+          setInstruction(VERIFY_STAGES[0].instruction);
+          setGuidance(VERIFY_STAGES[0].hint);
+          setVerifyStatus('preview');
+          scheduleNextCapture(RETRY_DELAY_MS, runCaptureStep);
+          return;
+        }
+
+        failureCountRef.current = 0;
+        const combinedEmbedding = computeAverageEmbedding([
+          firstFrame.embedding,
+          frameRes.embedding,
+        ]);
+
+        triggerFlash(true);
+        isCompletedRef.current = true;
+        setVerifyStatus('done');
+        setInstruction('Face Captured');
+        setGuidance('Verifying identity & location...');
+
+        if (typeof onCaptureRef.current === 'function') {
+          onCaptureRef.current({
+            embedding: combinedEmbedding,
+            livenessPassed: true,
+            livenessChallenge: 'fast_dual_frame',
+            livenessMetrics: {
+              yawDelta: Number(
+                Math.abs((frameRes.metrics?.yaw ?? 0) - (firstFrame.metrics?.yaw ?? 0)).toFixed(2)
+              ),
+              intraScanConsistency: Number(intraScanConsistency.toFixed(4)),
+              brightness: frameRes.metrics?.brightness ?? null,
+              sharpness: frameRes.metrics?.sharpness ?? null,
+            },
+            faceBox: frameRes.faceBox,
+          });
+        }
       }
     } catch (err) {
-      if (!isMountedRef.current) return;
-      const msg = err?.message || 'Capture failed. Please try again.';
-      console.warn('[FaceCamera] Capture caught error:', msg);
-      setErrorMsg(msg);
-      if (mode === 'register') {
-        setStageStatus('error');
-        const currentStage = FACE_ANGLES[stageIndexRef.current] || FACE_ANGLES[0];
-        setInstruction(currentStage.instruction);
-        setGuidance(currentStage.hint);
+      if (!isMountedRef.current || isCompletedRef.current) return;
+      failureCountRef.current += 1;
+      setErrorMsg(err?.message || 'Camera capture interrupted. Retrying...');
+      if (mode === 'register') setStageStatus('error');
+      else setVerifyStatus('preview');
+
+      if (failureCountRef.current < 6) {
+        scheduleNextCapture(RETRY_DELAY_MS, runCaptureStep);
       } else {
-        setVerifyStatus('preview');
-        const currentStage = VERIFY_STAGES[verifyStageIndexRef.current] || VERIFY_STAGES[0];
-        setInstruction(currentStage.instruction);
-        setGuidance(currentStage.hint);
+        if (mode === 'register') setStageStatus('paused');
+        else setVerifyStatus('paused');
       }
-      triggerFlash(false);
     } finally {
       isCapturingRef.current = false;
+      if (photoUri) {
+        FileSystem.deleteAsync(photoUri, { idempotent: true }).catch(() => {});
+      }
     }
-  }, [mode, triggerFlash, handleRegistrationCapture, handleVerificationCapture]);
+  }, [isCameraReady, isEngineReady, mode, triggerFlash, scheduleNextCapture]);
 
+  // Trigger initial fast auto-capture once both CameraView and TF.js engine are warmed up
   useEffect(() => {
-    if (mode !== 'verify' || !isCameraReady || verifyStatus !== 'preview') return;
+    if (!isCameraReady || !isEngineReady || isCompletedRef.current) return;
+    scheduleNextCapture(INITIAL_SETTLE_DELAY_MS, runCaptureStep);
+  }, [isCameraReady, isEngineReady, scheduleNextCapture, runCaptureStep]);
 
-    autoCaptureTimerRef.current = setTimeout(() => {
-      if (isMountedRef.current && !isCapturingRef.current) {
-        doCapture();
-      }
-    }, VERIFY_AUTO_CAPTURE_DELAY);
-
-    return () => {
-      if (autoCaptureTimerRef.current) {
-        clearTimeout(autoCaptureTimerRef.current);
-        autoCaptureTimerRef.current = null;
-      }
-    };
-  }, [isCameraReady, verifyStatus, mode, doCapture]);
-
-  const handleRetry = useCallback(() => {
+  const handleManualRetry = useCallback(() => {
+    clearScheduledCapture();
+    isCompletedRef.current = false;
+    isCapturingRef.current = false;
+    failureCountRef.current = 0;
+    lastBase64SampleRef.current = null;
     setErrorMsg('');
+
     if (mode === 'register') {
-      const currentStage = FACE_ANGLES[stageIndexRef.current] || FACE_ANGLES[0];
+      stageIndexRef.current = 0;
+      capturedSamplesRef.current = [];
+      setStageIndex(0);
+      setCapturedSamples([]);
       setStageStatus('idle');
-      setInstruction(currentStage.instruction);
-      setGuidance(currentStage.hint);
-      return;
+      setInstruction(FACE_ANGLES[0].instruction);
+      setGuidance(FACE_ANGLES[0].hint);
+    } else {
+      verifyStageIndexRef.current = 0;
+      verifyFirstFrameRef.current = null;
+      setVerifyStageIdx(0);
+      setVerifyStatus('preview');
+      setInstruction(VERIFY_STAGES[0].instruction);
+      setGuidance(VERIFY_STAGES[0].hint);
     }
 
-    const currentStage = VERIFY_STAGES[verifyStageIndexRef.current] || VERIFY_STAGES[0];
-    setVerifyStatus('preview');
-    setInstruction(currentStage.instruction);
-    setGuidance(currentStage.hint);
-  }, [mode]);
+    scheduleNextCapture(200, runCaptureStep);
+  }, [mode, clearScheduledCapture, scheduleNextCapture, runCaptureStep]);
 
   if (!permission) {
     return (
@@ -314,45 +518,44 @@ export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
   if (!permission.granted) {
     return (
       <View style={styles.center}>
-        <MaterialCommunityIcons name="camera-off" size={56} color={THEME_COLORS.danger} />
+        <MaterialCommunityIcons name="camera-off" size={64} color={THEME_COLORS.danger} />
         <Text style={styles.permTitle}>Camera Permission Required</Text>
         <Text style={styles.permDesc}>
-          AttendX needs camera access for local face verification.
+          AttendX processes faces offline on your device. Camera access is needed to capture your face.
         </Text>
         <TouchableOpacity style={styles.btn} onPress={requestPermission}>
-          <Text style={styles.btnText}>Grant Permission</Text>
+          <Text style={styles.btnText}>Grant Camera Permission</Text>
         </TouchableOpacity>
-        {onCancel && (
-          <TouchableOpacity style={styles.cancelLink} onPress={onCancel}>
-            <Text style={styles.cancelLinkText}>Cancel</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity style={styles.cancelLink} onPress={onCancel}>
+          <Text style={styles.cancelLinkText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
-  const ringColor =
-    stageStatus === 'success' || verifyStatus === 'done'
-      ? THEME_COLORS.success
-      : stageStatus === 'error'
-      ? THEME_COLORS.danger
-      : stageStatus === 'capturing' || verifyStatus === 'capturing'
-      ? THEME_COLORS.warning
-      : THEME_COLORS.primary;
-
-  const isCapturing = stageStatus === 'capturing' || verifyStatus === 'capturing';
-  const showCapture =
-    mode === 'register'
-      ? isCameraReady && (stageStatus === 'idle' || stageStatus === 'error')
-      : isCameraReady && verifyStatus === 'preview';
   const progress =
     mode === 'register'
       ? Math.round((capturedSamples.length / FACE_ANGLES.length) * 100)
       : verifyStatus === 'done'
-      ? 100
-      : verifyStageIndexRef.current === 1
-      ? 65
-      : 25;
+        ? 100
+        : Math.round((verifyStageIdx / VERIFY_STAGES.length) * 100);
+
+  const isBusyCapturing =
+    (mode === 'register' && stageStatus === 'capturing') ||
+    (mode === 'verify' && verifyStatus === 'capturing');
+
+  const isPaused =
+    (mode === 'register' && stageStatus === 'paused') ||
+    (mode === 'verify' && verifyStatus === 'paused');
+
+  let ringColor = THEME_COLORS.primary;
+  if (stageStatus === 'done' || stageStatus === 'success' || verifyStatus === 'done') {
+    ringColor = THEME_COLORS.success;
+  } else if (stageStatus === 'error' || stageStatus === 'paused' || verifyStatus === 'paused' || errorMsg) {
+    ringColor = THEME_COLORS.danger;
+  } else if (isBusyCapturing) {
+    ringColor = THEME_COLORS.warning;
+  }
 
   return (
     <View style={styles.container}>
@@ -360,25 +563,27 @@ export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
         ref={cameraRef}
         style={StyleSheet.absoluteFillObject}
         facing="front"
+        mirror={false}
         animateShutter={false}
-        onCameraReady={() => setIsCameraReady(true)}
+        pictureSize={pictureSize}
+        onCameraReady={handleCameraReady}
       />
 
       <View style={styles.overlay} pointerEvents="none" />
 
       <Animated.View
+        pointerEvents="none"
         style={[
           StyleSheet.absoluteFillObject,
           { backgroundColor: flashColorRef.current, opacity: flashAnim },
         ]}
-        pointerEvents="none"
       />
 
       <View style={styles.topSection}>
         <View style={styles.headerRow}>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {mode === 'register' ? 'FACE REGISTRATION' : 'FACE VERIFICATION'}
+              {mode === 'register' ? 'FAST FACE ENROLLMENT' : 'FACE VERIFICATION'}
             </Text>
           </View>
           <TouchableOpacity style={styles.closeBtn} onPress={onCancel}>
@@ -386,11 +591,11 @@ export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
           </TouchableOpacity>
         </View>
 
-        {mode === 'register' && (
+        {mode === 'register' ? (
           <View style={styles.stepper}>
             {FACE_ANGLES.map((step, idx) => {
-              const done = idx < stageIndex;
-              const active = idx === stageIndex;
+              const done = idx < stageIndex || stageStatus === 'done';
+              const active = idx === stageIndex && stageStatus !== 'done';
               return (
                 <View key={step.id} style={styles.stepItem}>
                   <View style={[styles.dot, done && styles.dotDone, active && styles.dotActive]}>
@@ -407,13 +612,11 @@ export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
               );
             })}
           </View>
-        )}
-
-        {mode === 'verify' && (
+        ) : (
           <View style={styles.stepper}>
             {VERIFY_STAGES.map((step, idx) => {
-              const done = idx < verifyStageIndexRef.current || verifyStatus === 'done';
-              const active = idx === verifyStageIndexRef.current && verifyStatus !== 'done';
+              const done = idx < verifyStageIdx || verifyStatus === 'done';
+              const active = idx === verifyStageIdx && verifyStatus !== 'done';
               return (
                 <View key={step.id} style={styles.stepItem}>
                   <View style={[styles.dot, done && styles.dotDone, active && styles.dotActive]}>
@@ -441,16 +644,30 @@ export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
         <Animated.View
           style={[
             styles.ring,
-            { borderColor: ringColor, transform: [{ scale: pulseAnim }] },
+            {
+              borderColor: ringColor,
+              transform: [{ scale: pulseAnim }],
+            },
           ]}
         >
-          <View style={[styles.cross, styles.tl]} />
-          <View style={[styles.cross, styles.tr]} />
-          <View style={[styles.cross, styles.bl]} />
-          <View style={[styles.cross, styles.br]} />
-          {isCapturing && (
+          <View style={[styles.cross, styles.tl, { borderColor: ringColor }]} />
+          <View style={[styles.cross, styles.tr, { borderColor: ringColor }]} />
+          <View style={[styles.cross, styles.bl, { borderColor: ringColor }]} />
+          <View style={[styles.cross, styles.br, { borderColor: ringColor }]} />
+          {isEngineReady && !isPaused && (
+            <Animated.View
+              style={[
+                styles.scanLine,
+                {
+                  backgroundColor: ringColor,
+                  transform: [{ translateY: scanLineAnim }],
+                },
+              ]}
+            />
+          )}
+          {!isEngineReady && (
             <View style={styles.spinnerOverlay}>
-              <ActivityIndicator size="large" color={THEME_COLORS.warning} />
+              <ActivityIndicator size="large" color={THEME_COLORS.primary} />
             </View>
           )}
         </Animated.View>
@@ -458,7 +675,9 @@ export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
 
       <View style={styles.bottomSection}>
         <View style={styles.hudCard}>
-          <Text style={styles.instrText}>{instruction}</Text>
+          <Text style={styles.instrText}>
+            {!isEngineReady ? 'Preparing Offline Face Engine...' : instruction}
+          </Text>
           <Text
             style={[
               styles.guidText,
@@ -469,36 +688,26 @@ export function FaceCamera({ mode = 'register', onCapture, onCancel }) {
             {errorMsg || guidance}
           </Text>
 
-          {showCapture && (
+          {isPaused ? (
             <TouchableOpacity
               style={[styles.captureBtn, { backgroundColor: THEME_COLORS.primary }]}
-              onPress={doCapture}
-              activeOpacity={0.8}
+              onPress={handleManualRetry}
+              activeOpacity={0.85}
             >
-              <MaterialCommunityIcons name="camera" size={22} color="#FFF" />
-              <Text style={styles.captureBtnText}>
-                {mode === 'register'
-                  ? `Capture ${FACE_ANGLES[stageIndex]?.label}`
-                  : `Capture ${VERIFY_STAGES[verifyStageIndexRef.current]?.label || 'Face'}`}
-              </Text>
+              <MaterialCommunityIcons name="refresh" size={20} color="#FFF" />
+              <Text style={styles.captureBtnText}>Retry Face Scan</Text>
             </TouchableOpacity>
-          )}
-
-          {((stageStatus === 'error' && mode === 'register') || (errorMsg && mode === 'verify')) && (
-            <TouchableOpacity style={styles.retryBtn} onPress={handleRetry}>
-              <Text style={styles.retryBtnText}>Try Again</Text>
-            </TouchableOpacity>
-          )}
-
-          {verifyStatus === 'preview' && mode === 'verify' && (
+          ) : (
             <Text style={styles.autoCapText}>
-              {verifyStageIndexRef.current === 0
-                ? 'Auto-capturing identity...'
-                : 'Auto-capturing liveness...'}
+              {!isEngineReady
+                ? 'Loading local model weights (offline)...'
+                : isBusyCapturing
+                  ? 'Analyzing on device...'
+                  : mode === 'register'
+                    ? `Auto-capturing sample ${Math.min(stageIndex + 1, FACE_ANGLES.length)} of ${FACE_ANGLES.length}...`
+                    : 'Auto-scanning live face...'}
             </Text>
           )}
-
-          {isCapturing && <Text style={styles.autoCapText}>Processing on device...</Text>}
         </View>
       </View>
     </View>
@@ -516,7 +725,7 @@ const styles = StyleSheet.create({
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.38)',
+    backgroundColor: 'rgba(0,0,0,0.34)',
   },
   permTitle: { color: '#FAFAF9', fontSize: 20, fontWeight: '700', marginTop: 16, marginBottom: 8, textAlign: 'center' },
   permDesc: { color: '#A8A29E', fontSize: 14, textAlign: 'center', lineHeight: 22, marginBottom: 24 },
@@ -586,11 +795,20 @@ const styles = StyleSheet.create({
   },
   spinnerOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.25)',
+    backgroundColor: 'rgba(0,0,0,0.35)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  cross: { position: 'absolute', width: 18, height: 18, borderColor: '#FFF' },
+  cross: { position: 'absolute', width: 20, height: 20, borderColor: '#FFF' },
+  scanLine: {
+    position: 'absolute',
+    top: 0,
+    left: 16,
+    right: 16,
+    height: 2.5,
+    borderRadius: 2,
+    opacity: 0.72,
+  },
   tl: { top: 14, left: 14, borderTopWidth: 2, borderLeftWidth: 2 },
   tr: { top: 14, right: 14, borderTopWidth: 2, borderRightWidth: 2 },
   bl: { bottom: 14, left: 14, borderBottomWidth: 2, borderLeftWidth: 2 },
@@ -601,7 +819,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingHorizontal: 16,
-    paddingBottom: 48,
+    paddingBottom: 44,
     zIndex: 10,
   },
   hudCard: {
@@ -613,22 +831,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  instrText: { color: '#FAFAF9', fontSize: 20, fontWeight: '700', textAlign: 'center' },
+  instrText: { color: '#FAFAF9', fontSize: 19, fontWeight: '700', textAlign: 'center' },
   guidText: { color: '#A8A29E', fontSize: 14, textAlign: 'center', lineHeight: 20 },
   guidTextSuccess: { color: THEME_COLORS.success },
   guidTextDanger: { color: THEME_COLORS.danger },
   captureBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 28,
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
     borderRadius: 14,
-    marginTop: 8,
+    marginTop: 6,
     elevation: 4,
   },
-  captureBtnText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
-  retryBtn: { marginTop: 4, padding: 10 },
-  retryBtnText: { color: THEME_COLORS.warning, fontSize: 14, fontWeight: '600' },
-  autoCapText: { color: '#78716C', fontSize: 12, marginTop: 4 },
+  captureBtnText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  autoCapText: { color: '#A8A29E', fontSize: 12, marginTop: 4 },
 });

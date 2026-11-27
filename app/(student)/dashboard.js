@@ -8,7 +8,11 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useAppTheme } from '../../src/context/ThemeContext';
 import { getStudentClassrooms } from '../../src/services/classroomService';
 import { getAttendanceStats, getActiveSession } from '../../src/services/attendanceService';
+import { prefetchFaceTemplate } from '../../src/services/faceService';
+import { preloadBiometricEngine } from '../../src/services/tensorflowService';
 import { StatCard } from '../../src/components/StatCard';
+import { FadeInView } from '../../src/components/FadeInView';
+import { IconBadge } from '../../src/components/IconBadge';
 import { calculateAttendancePercentage, toValidDate } from '../../src/utils/helpers';
 import { THEME_COLORS } from '../../src/constants';
 
@@ -93,9 +97,11 @@ export default function StudentDashboard() {
   useFocusEffect(
     useCallback(() => {
       loadData();
+      preloadBiometricEngine();
+      if (uid) prefetchFaceTemplate(uid);
       const refreshInterval = setInterval(() => loadActiveSessions(classroomsRef.current), 30000);
       return () => clearInterval(refreshInterval);
-    }, [loadData, loadActiveSessions])
+    }, [uid, loadData, loadActiveSessions])
   );
 
   useEffect(() => {
@@ -152,61 +158,70 @@ export default function StudentDashboard() {
         contentContainerStyle={styles.scroll}
       >
         {/* 1. WELCOME HEADER */}
-        <View style={styles.welcomeRow}>
-          <View style={styles.welcomeTextGroup}>
-            <Text variant="headlineSmall" style={[styles.greeting, { color: colors.text }]}>
-              Hello, {studentName} 👋
-            </Text>
-            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-              Your attendance & classroom overview
-            </Text>
+        <FadeInView>
+          <View style={[styles.welcomeRow, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 20, padding: 16 }]}>
+            <View style={styles.welcomeTextGroup}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text variant="headlineSmall" style={[styles.greeting, { color: colors.text }]}>
+                  Hello, {studentName}
+                </Text>
+                <MaterialCommunityIcons name="hand-wave-outline" size={22} color={colors.primary} />
+              </View>
+              <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+                Your attendance & classroom overview
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => router.push('/(student)/profile')}
+            >
+              <IconBadge name="school-outline" size={24} boxSize={46} borderRadius={16} />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.profileBadge, { backgroundColor: isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight }]}
-            onPress={() => router.push('/(student)/profile')}
-          >
-            <MaterialCommunityIcons name="account-school" size={24} color={colors.primary} />
-          </TouchableOpacity>
-        </View>
+        </FadeInView>
 
         {/* 2. BIOMETRIC REGISTRATION CALLOUT IF NOT REGISTERED */}
         {!isFaceRegistered && (
-          <Card style={[styles.alertCard, { backgroundColor: isDark ? '#2A1A10' : '#FFF7ED', borderColor: colors.primary }]} mode="outlined">
-            <Card.Content style={styles.alertCardContent}>
-              <MaterialCommunityIcons name="face-recognition" size={32} color={colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.alertTitle, { color: colors.text }]}>Face Registration Required</Text>
-                <Text style={[styles.alertDesc, { color: colors.textSecondary }]}>
-                  Enroll your 5-stage biometric template to enable instant face attendance check-ins.
-                </Text>
-              </View>
-              <Button
-                mode="contained"
-                buttonColor={colors.primary}
-                compact
-                onPress={() => router.push('/(student)/face-register')}
-              >
-                Register
-              </Button>
-            </Card.Content>
-          </Card>
+          <FadeInView delay={60}>
+            <Card style={[styles.alertCard, { backgroundColor: colors.surfaceAccent, borderColor: colors.primary }]} mode="outlined">
+              <Card.Content style={styles.alertCardContent}>
+                <IconBadge name="face-recognition" size={28} boxSize={50} borderRadius={16} pulse />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.alertTitle, { color: colors.text }]}>Face Registration Required</Text>
+                  <Text style={[styles.alertDesc, { color: colors.textSecondary }]}>
+                    Enroll your fast 3-sample face template (~5 seconds) to enable secure biometric attendance.
+                  </Text>
+                </View>
+                <Button
+                  mode="contained"
+                  buttonColor={colors.primary}
+                  textColor="#FFFFFF"
+                  compact
+                  onPress={() => router.push('/(student)/face-register')}
+                >
+                  Register
+                </Button>
+              </Card.Content>
+            </Card>
+          </FadeInView>
         )}
 
         {/* 3. STATS CARDS */}
-        <View style={styles.statsRow}>
+        <FadeInView delay={100} style={styles.statsRow}>
           <StatCard
             title="Attendance"
             value={`${stats.percentage}%`}
             icon="percent"
-            color={stats.percentage >= 75 ? THEME_COLORS.success : THEME_COLORS.warning}
+            color={stats.percentage >= 75 ? THEME_COLORS.success : colors.primary}
+            onPress={() => router.push('/(student)/attendance')}
           />
           <StatCard
             title="Present Sessions"
             value={`${stats.present} / ${stats.total}`}
-            icon="check-circle"
-            color={colors.primary}
+            icon="check-decagram-outline"
+            color={THEME_COLORS.secondary}
+            onPress={() => router.push('/(student)/attendance')}
           />
-        </View>
+        </FadeInView>
 
         {activeSessions.length > 0 && (
           <View style={styles.activeSessionsSection}>
@@ -226,7 +241,7 @@ export default function StudentDashboard() {
               return (
                 <Card
                   key={session.sessionId}
-                  style={[styles.activeSessionCard, { backgroundColor: isDark ? '#17352D' : '#ECFDF5', borderColor: THEME_COLORS.success }]}
+                  style={[styles.activeSessionCard, { backgroundColor: colors.successSurface, borderColor: THEME_COLORS.success }]}
                   mode="outlined"
                 >
                   <Card.Content style={styles.activeSessionContent}>

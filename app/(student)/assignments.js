@@ -119,7 +119,7 @@ export default function StudentTasksScreen() {
       });
 
       setSubmissionsMap((prev) => ({ ...prev, [assignmentId]: sub }));
-      Alert.alert('Submitted 🎉', `Your solution file "${file.name}" has been uploaded.`);
+      Alert.alert('Submitted', `Your solution file "${file.name}" has been uploaded.`);
     } catch (err) {
       Alert.alert('Submission Error', err.message || 'Failed to submit assignment');
     } finally {
@@ -146,7 +146,7 @@ export default function StudentTasksScreen() {
 
       setSubmissionsMap((prev) => ({ ...prev, [assignmentId]: sub }));
       setSubmissionUrlInput('');
-      Alert.alert('Task Submitted 🎉', 'Your solution URL has been recorded successfully!');
+      Alert.alert('Task Submitted', 'Your solution URL has been recorded successfully!');
     } catch (err) {
       Alert.alert('Submission Error', err.message || 'Failed to submit task');
     } finally {
@@ -235,8 +235,8 @@ export default function StudentTasksScreen() {
                       onPress={() => handleSelectClass(cls)}
                       style={{
                         backgroundColor: isSelected
-                          ? (isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight)
-                          : (isDark ? colors.surfaceVariant : '#F3F4F6'),
+                          ? colors.primarySoft
+                          : colors.surfaceVariant,
                       }}
                       textStyle={{
                         color: isSelected ? colors.primary : colors.textSecondary,
@@ -347,14 +347,18 @@ export default function StudentTasksScreen() {
 
                 {/* Submitted Work Link Display */}
                 {existingSubmission?.submissionUrl && (
-                  <View style={[styles.submittedBox, { backgroundColor: isDark ? colors.surfaceVariant : '#F8FAFC' }]}>
+                  <View style={[styles.submittedBox, { backgroundColor: colors.surfaceVariant }]}>
                     <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>Your Submission:</Text>
-                    <TouchableOpacity onPress={() => handleOpenUrl(existingSubmission.submissionUrl)}>
+                    <TouchableOpacity
+                      onPress={() => handleOpenUrl(existingSubmission.submissionUrl)}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}
+                    >
+                      <MaterialCommunityIcons name="link-variant" size={14} color={colors.primary} />
                       <Text
-                        style={{ fontSize: 12, color: colors.primary, textDecorationLine: 'underline', marginTop: 3 }}
+                        style={{ flex: 1, fontSize: 12, color: colors.primary, textDecorationLine: 'underline' }}
                         numberOfLines={2}
                       >
-                        🔗 {existingSubmission.submissionUrl}
+                        {existingSubmission.submissionUrl}
                       </Text>
                     </TouchableOpacity>
                     {existingSubmission.submittedAt && (

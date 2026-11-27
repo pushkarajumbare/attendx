@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, Alert } from 'react-native';
 import { ActivityIndicator, Text } from 'react-native-paper';
 import { useRouter } from 'expo-router';
@@ -7,6 +7,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useAppTheme } from '../../src/context/ThemeContext';
 import { FaceCamera } from '../../src/components/FaceCamera';
 import { registerFaceSamples } from '../../src/services/faceService';
+import { preloadBiometricEngine } from '../../src/services/tensorflowService';
 import { THEME_COLORS } from '../../src/constants';
 
 export default function FaceRegisterScreen() {
@@ -18,6 +19,10 @@ export default function FaceRegisterScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
 
+  useEffect(() => {
+    preloadBiometricEngine();
+  }, []);
+
   const handleFaceScanComplete = async (samples) => {
     try {
       if (!uid) {
@@ -26,15 +31,12 @@ export default function FaceRegisterScreen() {
       }
 
       if (!Array.isArray(samples) || samples.length !== 3) {
-        Alert.alert('Capture Error', 'Capture front, left, and right face samples before saving.');
+        Alert.alert('Capture Error', 'Capture all 3 face samples before saving.');
         return;
       }
 
       setIsSubmitting(true);
-      setSyncStatus('Creating on-device face template...');
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      setSyncStatus('Saving face template...');
+      setSyncStatus('Saving encrypted face template...');
       const success = await registerFaceSamples(uid, samples);
 
       if (success) {

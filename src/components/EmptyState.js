@@ -1,15 +1,24 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Text } from 'react-native-paper';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../context/ThemeContext';
+import { IconBadge } from './IconBadge';
+import { FadeInView } from './FadeInView';
 
-export function EmptyState({ title, subtitle, icon }) {
+export function EmptyState({ title, subtitle, icon, iconName = 'folder-open-outline' }) {
   const { colors } = useAppTheme();
 
   return (
-    <View style={styles.container}>
-      {icon || <MaterialCommunityIcons name="folder-open-outline" size={48} color={colors.primary} style={{ opacity: 0.8 }} />}
+    <FadeInView style={styles.container}>
+      {icon || (
+        <IconBadge
+          name={iconName}
+          size={34}
+          boxSize={68}
+          borderRadius={22}
+          color={colors.primary}
+        />
+      )}
       <Text variant="titleMedium" style={[styles.title, { color: colors.text }]}>
         {title}
       </Text>
@@ -18,7 +27,7 @@ export function EmptyState({ title, subtitle, icon }) {
           {subtitle}
         </Text>
       ) : null}
-    </View>
+    </FadeInView>
   );
 }
 
@@ -31,7 +40,7 @@ const styles = StyleSheet.create({
     minHeight: 200,
   },
   title: {
-    marginTop: 14,
+    marginTop: 16,
     fontWeight: '700',
     textAlign: 'center',
     fontSize: 16,
@@ -40,6 +49,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
     textAlign: 'center',
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 19,
   },
 });

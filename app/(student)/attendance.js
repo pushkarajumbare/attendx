@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { View, StyleSheet, Alert, ScrollView, RefreshControl } from 'react-native';
 import { Text, Button, Card, Menu, Divider, ActivityIndicator, Chip } from 'react-native-paper';
-import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useAuth } from '../../src/context/AuthContext';
@@ -13,11 +13,14 @@ import {
   getStudentLectureHistory,
   markAttendance,
 } from '../../src/services/attendanceService';
+import { prefetchFaceTemplate } from '../../src/services/faceService';
+import { preloadBiometricEngine } from '../../src/services/tensorflowService';
 import { formatDate, formatTime, formatDateTime, toValidDate } from '../../src/utils/helpers';
 import { THEME_COLORS, REJECTION_REASONS } from '../../src/constants';
 import { FaceCamera } from '../../src/components/FaceCamera';
 
 export default function StudentAttendanceScreen() {
+  const router = useRouter();
   const { user, profile, loading: authLoading, refreshProfile } = useAuth();
   const { colors, isDark } = useAppTheme();
   const { classroomId: classroomIdParam } = useLocalSearchParams();
@@ -104,7 +107,9 @@ export default function StudentAttendanceScreen() {
   useFocusEffect(
     useCallback(() => {
       loadClassrooms();
-    }, [loadClassrooms])
+      preloadBiometricEngine();
+      if (uid) prefetchFaceTemplate(uid);
+    }, [uid, loadClassrooms])
   );
 
   useFocusEffect(
@@ -160,11 +165,11 @@ export default function StudentAttendanceScreen() {
     switch (status) {
       case 'active':
       case 'reopened':
-        return isDark ? 'rgba(16, 185, 129, 0.2)' : '#D1FAE5';
+        return colors.successSurface;
       case 'paused':
-        return isDark ? 'rgba(245, 158, 11, 0.2)' : '#FEF3C7';
+        return colors.warningSurface;
       default:
-        return isDark ? 'rgba(255, 255, 255, 0.1)' : '#E5E7EB';
+        return colors.surfaceVariant;
     }
   };
 
@@ -200,23 +205,45 @@ export default function StudentAttendanceScreen() {
 
       if (result.success) {
         Alert.alert(
-          'Attendance Marked ✅',
+          'Attendance Marked',
           `Successfully checked in for ${activeSession.subject || selectedClass.className || 'Class'}.${
-            result.record?.faceConfidence ? `\n\nBiometric Confidence: ${result.record.faceConfidence}%` : ''
+            result.record?.faceConfidence ? `\n\nBiometric Match: ${result.record.faceConfidence}%` : ''
           }`,
           [{ text: 'OK', onPress: () => loadSession() }]
         );
       } else {
+        if (result.faceResult?.requiresReRegistration) {
+          Alert.alert(
+            'Re-Registration Required',
+            result.reason || 'Your face template needs a quick one-time update.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Re-register Face',
+                onPress: () => router.push('/(student)/face-register'),
+              },
+            ]
+          );
+          return;
+        }
+
         // Show specific, user-friendly error messages
         let title = 'Check-in Rejected';
         let message = result.reason || 'Attendance could not be marked.';
 
         if (result.faceResult && !result.faceResult.livenessPassed) {
           title = 'Liveness Check Failed';
-          message = 'A real face was not detected. Please look directly at the camera and try again.';
-        } else if (result.reason && result.reason.toLowerCase().includes('mismatch')) {
-          title = 'Face Not Recognised';
-          message = 'Your face did not match the registered biometric. Make sure you are registered and lighting is good.';
+          message = 'A real face was not detected. Look directly at the camera and try again.';
+        } else if (
+          result.reason &&
+          (result.reason.toLowerCase().includes('not matched confidently') ||
+            result.reason.toLowerCase().includes('mismatch'))
+        ) {
+          title = 'Face Not Matched';
+          message =
+            result.reason.toLowerCase().includes('confidently')
+              ? result.reason
+              : 'Face not matched confidently. Please try again in clear lighting.';
         } else if (result.reason && result.reason.toLowerCase().includes('location')) {
           title = 'Outside Classroom Range';
           message = 'You must be within the classroom geofence to mark attendance.';
@@ -334,7 +361,10 @@ export default function StudentAttendanceScreen() {
           <Card key={classroom.classroomId} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
             <Card.Content>
               <Text variant="titleSmall" style={{ color: colors.text, fontWeight: '700' }}>{classroom.className}</Text>
-              <Text style={{ color: colors.textSecondary, marginTop: 3 }}>Teacher: {summary.teacherName}</Text>
+              <Text style={{ color: colors.textSecondary, marginTop: 3 }}>
+                Teacher: {summary.teacherName}
+                {summary.rollNumber ? ` · Roll No: ${summary.rollNumber}` : ''}
+              </Text>
               <Text style={{ color: colors.textSecondary, marginTop: 6 }}>Total lectures: {summary.total}</Text>
               <View style={[styles.detailRow, { marginTop: 8 }]}>
                 <Text style={[styles.detailsLabel, { color: colors.textSecondary }]}>Present {summary.present}</Text>
@@ -369,9 +399,16 @@ export default function StudentAttendanceScreen() {
                   <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
                     Start: {formatTime(lecture.startTime)} · End: {formatTime(lecture.endTime)}
                   </Text>
-                  <Text style={{ color: present ? THEME_COLORS.success : THEME_COLORS.danger, fontWeight: '700', marginTop: 3 }}>
-                    {present ? '✓ Present' : '✗ Absent'}
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 }}>
+                    <MaterialCommunityIcons
+                      name={present ? 'check-circle' : 'close-circle'}
+                      size={15}
+                      color={present ? THEME_COLORS.success : THEME_COLORS.danger}
+                    />
+                    <Text style={{ color: present ? THEME_COLORS.success : THEME_COLORS.danger, fontWeight: '700' }}>
+                      {present ? 'Present' : 'Absent'}
+                    </Text>
+                  </View>
                   <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
                     Marked time: {lecture.attendance?.time ? formatDateTime(lecture.attendance.time) : 'N/A'}
                   </Text>

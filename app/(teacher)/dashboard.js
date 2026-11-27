@@ -10,6 +10,8 @@ import { useAppTheme } from '../../src/context/ThemeContext';
 import { getTeacherClassrooms } from '../../src/services/classroomService';
 import { getAttendanceByClassroom } from '../../src/services/attendanceService';
 import { StatCard } from '../../src/components/StatCard';
+import { FadeInView } from '../../src/components/FadeInView';
+import { IconBadge } from '../../src/components/IconBadge';
 import { getTodayKey } from '../../src/utils/helpers';
 import { THEME_COLORS } from '../../src/constants';
 
@@ -74,7 +76,7 @@ export default function TeacherDashboard() {
       if (Clipboard && Clipboard.setStringAsync) {
         await Clipboard.setStringAsync(code);
       }
-      Alert.alert('Code Copied! 📋', `Classroom code "${code}" for ${className} copied to clipboard.`);
+      Alert.alert('Code Copied', `Classroom code "${code}" for ${className} copied to clipboard.`);
     } catch (_) {
       Alert.alert('Classroom Code', code);
     }
@@ -124,38 +126,42 @@ export default function TeacherDashboard() {
       contentContainerStyle={styles.scroll}
     >
       {/* 1. WELCOME HEADER */}
-      <View style={styles.welcomeRow}>
-        <View style={styles.welcomeTextGroup}>
-          <Text variant="headlineSmall" style={[styles.greeting, { color: colors.text }]}>
-            Welcome, {teacherFirstName} 👋
-          </Text>
-          <Text style={[styles.welcomeSubtext, { color: colors.textSecondary }]}>
-            Manage your classes, files & biometric sessions
-          </Text>
+      <FadeInView>
+        <View style={[styles.welcomeRow, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 20, padding: 16 }]}>
+          <View style={styles.welcomeTextGroup}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text variant="headlineSmall" style={[styles.greeting, { color: colors.text }]}>
+                Welcome, {teacherFirstName}
+              </Text>
+              <MaterialCommunityIcons name="hand-wave-outline" size={22} color={colors.primary} />
+            </View>
+            <Text style={[styles.welcomeSubtext, { color: colors.textSecondary }]}>
+              Manage your classes, files & biometric sessions
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => router.push('/(teacher)/profile')}>
+            <IconBadge name="account-tie" size={24} boxSize={46} borderRadius={16} />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          style={[styles.profileBadge, { backgroundColor: isDark ? colors.surfaceAccent : THEME_COLORS.primaryLight }]}
-          onPress={() => router.push('/(teacher)/profile')}
-        >
-          <MaterialCommunityIcons name="account-tie" size={24} color={colors.primary} />
-        </TouchableOpacity>
-      </View>
+      </FadeInView>
 
       {/* 2. STATS ROW */}
-      <View style={styles.statsRow}>
+      <FadeInView delay={60} style={styles.statsRow}>
         <StatCard
           title="Total Classrooms"
           value={classrooms.length}
-          icon="google-classroom"
+          icon="school-outline"
           color={colors.primary}
+          onPress={() => router.push('/(teacher)/classrooms')}
         />
         <StatCard
           title="Present Today"
           value={todayPresent}
-          icon="account-check"
+          icon="account-check-outline"
           color={THEME_COLORS.success}
+          onPress={() => router.push('/(teacher)/attendance-report')}
         />
-      </View>
+      </FadeInView>
 
       {/* 3. PRIMARY ACTION BUTTONS */}
       <View style={styles.actionButtonsRow}>
@@ -215,7 +221,7 @@ export default function TeacherDashboard() {
                 </View>
                 <Chip
                   icon="account-group"
-                  style={{ backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F3F4F6' }}
+                  style={{ backgroundColor: colors.surfaceVariant }}
                   textStyle={{ color: colors.text, fontSize: 12, fontWeight: '600' }}
                 >
                   {cls.studentIds?.length || 0} Students
@@ -262,8 +268,8 @@ export default function TeacherDashboard() {
               <Button
                 mode="contained-tonal"
                 icon="calendar-check"
-                buttonColor={isDark ? colors.surfaceAccent : '#FED7AA'}
-                textColor={colors.primaryDark}
+                buttonColor={colors.primarySoft}
+                textColor={isDark ? THEME_COLORS.secondary : colors.primaryDark}
                 compact
                 onPress={() => router.push('/(teacher)/attendance-session')}
               >
@@ -298,7 +304,7 @@ export default function TeacherDashboard() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  scroll: { padding: 16, paddingBottom: 40 },
+  scroll: { padding: 16, paddingBottom: 110 },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   loadingText: { marginTop: 12, fontSize: 14 },
   errorText: { fontWeight: '700', marginTop: 12, fontSize: 16 },

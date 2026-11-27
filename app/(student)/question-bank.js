@@ -102,7 +102,7 @@ export default function StudentQuestionBankScreen() {
           >
             <Card.Content>
               <View style={styles.cardHeader}>
-                <MaterialCommunityIcons name="help-box-outline" size={24} color={colors.primary} />
+                <MaterialCommunityIcons name="file-question-outline" size={24} color={colors.primary} />
                 <View style={{ flex: 1 }}>
                   <Text variant="titleMedium" style={{ fontWeight: '700', color: colors.text }}>
                     {item.title}

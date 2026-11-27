@@ -7,6 +7,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { resetPassword } from '../../src/services/authService';
 import { useAppTheme } from '../../src/context/ThemeContext';
+import { FadeInView } from '../../src/components/FadeInView';
+import { IconBadge } from '../../src/components/IconBadge';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -25,7 +27,7 @@ export default function ForgotPasswordScreen() {
     try {
       await resetPassword(email.trim());
       Alert.alert(
-        'Password Reset Email Sent ✉️',
+        'Password Reset Email Sent',
         'Check your inbox for password reset instructions.',
         [{ text: 'Back to Login', onPress: () => router.back() }]
       );
@@ -39,10 +41,8 @@ export default function ForgotPasswordScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView contentContainerStyle={styles.scroll}>
-        <View style={styles.header}>
-          <View style={[styles.iconCircle, { backgroundColor: 'rgba(249, 115, 22, 0.15)' }]}>
-            <MaterialCommunityIcons name="lock-reset" size={36} color={colors.primary} />
-          </View>
+        <FadeInView style={styles.header}>
+          <IconBadge name="lock-reset" size={34} boxSize={68} borderRadius={22} style={{ marginBottom: 12 }} />
           <Text style={[styles.brand, { color: colors.primary }]}>AttendX</Text>
           <Text variant="headlineSmall" style={[styles.title, { color: colors.text }]}>
             Reset Password
@@ -50,9 +50,10 @@ export default function ForgotPasswordScreen() {
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             Enter your email and we will send you a link to reset your account password.
           </Text>
-        </View>
+        </FadeInView>
 
-        <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
+        <FadeInView delay={70}>
+          <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
           <Card.Content style={styles.cardContent}>
             <TextInput
               label="Email Address *"
@@ -71,11 +72,13 @@ export default function ForgotPasswordScreen() {
 
             <Button
               mode="contained"
+              icon="email-fast-outline"
               onPress={handleReset}
               loading={loading}
               disabled={loading}
               style={styles.btn}
               buttonColor={colors.primary}
+              textColor="#FFFFFF"
               contentStyle={styles.btnContent}
             >
               Send Reset Link
@@ -91,6 +94,7 @@ export default function ForgotPasswordScreen() {
             </Button>
           </Card.Content>
         </Card>
+        </FadeInView>
       </ScrollView>
     </SafeAreaView>
   );

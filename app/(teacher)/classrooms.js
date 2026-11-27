@@ -49,7 +49,7 @@ export default function TeacherClassroomsScreen() {
       if (Clipboard && Clipboard.setStringAsync) {
         await Clipboard.setStringAsync(code);
       }
-      Alert.alert('Code Copied! 📋', `Classroom code "${code}" for ${className} copied to clipboard.`);
+      Alert.alert('Code Copied', `Classroom code "${code}" for ${className} copied to clipboard.`);
     } catch (_) {
       Alert.alert('Classroom Code', code);
     }
@@ -134,7 +134,7 @@ export default function TeacherClassroomsScreen() {
               <View style={styles.metaRow}>
                 <Chip
                   icon="account-group"
-                  style={{ backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F3F4F6' }}
+                  style={{ backgroundColor: colors.surfaceVariant }}
                   textStyle={{ color: colors.textSecondary, fontSize: 12 }}
                 >
                   {cls.studentIds?.length || 0} Students Enrolled

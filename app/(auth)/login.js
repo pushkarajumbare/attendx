@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View, StyleSheet, ScrollView, Alert } from 'react-native';
 import { Text, TextInput, Button, Card } from 'react-native-paper';
 import { useRouter, useLocalSearchParams, Link } from 'expo-router';
@@ -8,13 +8,24 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { signIn } from '../../src/services/authService';
 import { useAuth } from '../../src/context/AuthContext';
 import { useAppTheme } from '../../src/context/ThemeContext';
+import { FadeInView } from '../../src/components/FadeInView';
+import { IconBadge } from '../../src/components/IconBadge';
 import { ROLES, THEME_COLORS } from '../../src/constants';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { refreshProfile } = useAuth();
+  const { user, profile, loading: authLoading, refreshProfile } = useAuth();
   const { role } = useLocalSearchParams();
   const { colors, isDark } = useAppTheme();
+
+  useEffect(() => {
+    if (authLoading || !user || !profile) return;
+    if (profile.role === ROLES.TEACHER) {
+      router.replace('/(teacher)/dashboard');
+    } else if (profile.role === ROLES.STUDENT) {
+      router.replace(profile.faceRegistered ? '/(student)/dashboard' : '/(student)/face-register');
+    }
+  }, [authLoading, user, profile, router]);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -55,14 +66,15 @@ export default function LoginScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView contentContainerStyle={styles.scroll}>
-        <View style={styles.header}>
-          <View style={[styles.brandBadge, { backgroundColor: 'rgba(249, 115, 22, 0.15)' }]}>
-            <MaterialCommunityIcons
-              name={isTeacherRole ? 'account-tie' : 'account-school'}
-              size={36}
-              color={colors.primary}
-            />
-          </View>
+        <FadeInView style={styles.header}>
+          <IconBadge
+            name={isTeacherRole ? 'account-tie' : 'school'}
+            size={34}
+            boxSize={68}
+            borderRadius={22}
+            color={colors.primary}
+            style={{ marginBottom: 12 }}
+          />
           <Text style={[styles.brand, { color: colors.primary }]}>AttendX</Text>
           <Text variant="headlineSmall" style={[styles.title, { color: colors.text }]}>
             {isTeacherRole ? 'Teacher Portal' : 'Student Portal'}
@@ -70,9 +82,10 @@ export default function LoginScreen() {
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             Sign in to access your biometric sessions & classrooms
           </Text>
-        </View>
+        </FadeInView>
 
-        <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
+        <FadeInView delay={70}>
+          <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
           <Card.Content style={styles.cardContent}>
             <TextInput
               label="Email Address *"
@@ -112,11 +125,13 @@ export default function LoginScreen() {
 
             <Button
               mode="contained"
+              icon="login-variant"
               onPress={handleLogin}
               loading={loading}
               disabled={loading}
               style={styles.btn}
               buttonColor={colors.primary}
+              textColor="#FFFFFF"
               contentStyle={styles.btnContent}
             >
               Sign In
@@ -137,6 +152,7 @@ export default function LoginScreen() {
             </View>
           </Card.Content>
         </Card>
+        </FadeInView>
 
         <Button
           mode="text"

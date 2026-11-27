@@ -178,32 +178,103 @@ export async function getStudentClassrooms(studentId) {
   }
 }
 
+export function sortStudentsByRollAndName(students = []) {
+  return [...students].sort((a, b) => {
+    const rA = String(a?.rollNumber ?? '').trim();
+    const rB = String(b?.rollNumber ?? '').trim();
+    if (rA && rB) {
+      const cmp = rA.localeCompare(rB, undefined, { numeric: true, sensitivity: 'base' });
+      if (cmp !== 0) return cmp;
+    } else if (rA && !rB) {
+      return -1;
+    } else if (!rA && rB) {
+      return 1;
+    }
+    return String(a?.name || a?.displayName || '').localeCompare(
+      String(b?.name || b?.displayName || ''),
+      undefined,
+      { sensitivity: 'base' }
+    );
+  });
+}
+
 /**
- * Get all students enrolled in a classroom with their user profiles.
+ * Get all students enrolled in a classroom with their user profiles and classroom roll numbers.
  */
 export async function getClassroomStudents(classroomId) {
   if (!classroomId) return [];
   const classroomDoc = await readDoc(doc(db, COLLECTIONS.CLASSROOMS, classroomId));
   if (!classroomDoc.exists()) return [];
 
-  const studentIds = classroomDoc.data()?.studentIds || [];
+  const classroomData = classroomDoc.data() || {};
+  const studentIds = [...new Set(classroomData.studentIds || [])];
   if (studentIds.length === 0) return [];
+  const rollMap = classroomData.studentRollNumbers || {};
 
   const students = await Promise.all(
     studentIds.map(async (sid) => {
       try {
         const uDoc = await readDoc(doc(db, COLLECTIONS.USERS, sid));
-        if (uDoc.exists()) {
-          return { studentId: sid, ...uDoc.data() };
-        }
-        return { studentId: sid, name: 'Student', email: '' };
+        const userData = uDoc.exists() ? uDoc.data() : {};
+        const hasClassroomRoll = Object.prototype.hasOwnProperty.call(rollMap, sid);
+        const resolvedRoll = hasClassroomRoll
+          ? String(rollMap[sid] ?? '').trim()
+          : String(userData.rollNumber ?? '').trim();
+        return {
+          studentId: sid,
+          name: userData.name || userData.displayName || 'Student',
+          email: userData.email || '',
+          faceRegistered: Boolean(userData.faceRegistered),
+          rollNumber: resolvedRoll,
+        };
       } catch {
-        return { studentId: sid, name: 'Student', email: '' };
+        const hasClassroomRoll = Object.prototype.hasOwnProperty.call(rollMap, sid);
+        return {
+          studentId: sid,
+          name: 'Student',
+          email: '',
+          faceRegistered: false,
+          rollNumber: hasClassroomRoll ? String(rollMap[sid] ?? '').trim() : '',
+        };
       }
     })
   );
 
-  return students;
+  return sortStudentsByRollAndName(students);
+}
+
+/**
+ * Teacher sets, updates, or clears (blank) a student's roll number for a classroom.
+ * When empty/blank is saved, it remains blank cleanly.
+ */
+export async function updateStudentRollNumber(classroomId, teacherId, studentId, rollNumber) {
+  if (!classroomId || !teacherId || !studentId) {
+    throw new Error('Classroom, teacher, and student identity are required.');
+  }
+
+  const classRef = doc(db, COLLECTIONS.CLASSROOMS, classroomId);
+  const classDoc = await readDoc(classRef);
+  if (!classDoc.exists()) {
+    throw new Error('Classroom not found.');
+  }
+  const classData = classDoc.data();
+  if (classData.teacherId !== teacherId) {
+    throw new Error('Unauthorized: only the classroom teacher can update roll numbers.');
+  }
+  if (!Array.isArray(classData.studentIds) || !classData.studentIds.includes(studentId)) {
+    throw new Error('Student is not enrolled in this classroom.');
+  }
+
+  const normalizedRoll = String(rollNumber ?? '').trim();
+  const nextMap = { ...(classData.studentRollNumbers || {}) };
+  nextMap[studentId] = normalizedRoll;
+
+  await updateDoc(classRef, {
+    studentRollNumbers: nextMap,
+    updatedAt: serverTimestamp(),
+  });
+
+  return normalizedRoll;
 }
 
 export async function deleteClassroom(classroomId, teacherId) {

@@ -37,7 +37,7 @@ export default function CreateClassroomScreen() {
       });
 
       Alert.alert(
-        'Classroom Created! 🎉',
+        'Classroom Created',
         `Classroom "${newClass.className}" created successfully.\n\nUnique Join Code: ${newClass.classroomCode}\nShare this code with your students so they can enroll.`,
         [
           {

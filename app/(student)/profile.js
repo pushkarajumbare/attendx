@@ -113,7 +113,7 @@ export default function StudentProfileScreen() {
           <List.Item
             title="Biometric Face Enrollment"
             titleStyle={{ color: colors.text, fontWeight: '600' }}
-            description={isRegistered ? 'Update your 5-stage face template' : 'Enroll face biometrics to take attendance'}
+            description={isRegistered ? 'Update your 3-sample biometric face template' : 'Enroll face biometrics to take attendance'}
             descriptionStyle={{ color: colors.textSecondary, fontSize: 12 }}
             left={(props) => <List.Icon {...props} icon="face-recognition" color={colors.primary} />}
             right={(props) => <List.Icon {...props} icon="chevron-right" color={colors.textSecondary} />}

@@ -1,40 +1,52 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Text, Button } from 'react-native-paper';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppTheme } from '../context/ThemeContext';
 import { THEME_COLORS } from '../constants';
+import { IconBadge } from './IconBadge';
+import { FadeInView } from './FadeInView';
 
-export function ErrorScreen({ 
-  title = 'Something went wrong', 
+export function ErrorScreen({
+  title = 'Something went wrong',
   message = '',
   onRetry = null,
-  icon = null
+  icon = null,
 }) {
-  const { colors } = useAppTheme();
+  const { colors, isDark } = useAppTheme();
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <FadeInView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.iconContainer}>
-        {icon || <MaterialCommunityIcons name="alert-circle-outline" size={56} color={THEME_COLORS.danger} />}
+        {icon || (
+          <IconBadge
+            name="alert-circle-outline"
+            size={36}
+            boxSize={70}
+            borderRadius={22}
+            color={THEME_COLORS.danger}
+            backgroundColor={isDark ? 'rgba(239, 68, 68, 0.18)' : '#FEF2F2'}
+          />
+        )}
       </View>
-      <Text variant="titleLarge" style={[styles.title, { color: THEME_COLORS.danger }]}>
+      <Text variant="titleLarge" style={[styles.title, { color: colors.text }]}>
         {title}
       </Text>
       {message ? (
         <Text style={[styles.message, { color: colors.textSecondary }]}>{message}</Text>
       ) : null}
       {onRetry && (
-        <Button 
-          mode="contained" 
-          onPress={onRetry} 
+        <Button
+          mode="contained"
+          icon="refresh"
+          onPress={onRetry}
           style={styles.button}
           buttonColor={colors.primary}
+          textColor="#FFFFFF"
         >
           Try Again
         </Button>
       )}
-    </View>
+    </FadeInView>
   );
 }
 
@@ -54,7 +66,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   message: {
-    marginTop: 10,
+    marginTop: 8,
     textAlign: 'center',
     lineHeight: 20,
     fontSize: 13,

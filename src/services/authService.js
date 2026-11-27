@@ -14,6 +14,7 @@ import {
 import * as Device from 'expo-device';
 import { auth, db } from '../config/firebase';
 import { COLLECTIONS, ROLES } from '../constants';
+import { clearFaceTemplateState } from './faceService';
 
 async function getDeviceId() {
   return Device.osInternalBuildId || Device.modelId || 'unknown-device';
@@ -118,6 +119,10 @@ export async function resetPassword(email) {
 }
 
 export async function logOut() {
+  const uid = auth.currentUser?.uid;
+  if (uid) {
+    await clearFaceTemplateState(uid);
+  }
   await signOut(auth);
 }
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View, StyleSheet, ScrollView, Alert } from 'react-native';
 import { Text, TextInput, Button, Card } from 'react-native-paper';
 import { useRouter, useLocalSearchParams, Link } from 'expo-router';
@@ -8,13 +8,24 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { signUp } from '../../src/services/authService';
 import { useAuth } from '../../src/context/AuthContext';
 import { useAppTheme } from '../../src/context/ThemeContext';
+import { FadeInView } from '../../src/components/FadeInView';
+import { IconBadge } from '../../src/components/IconBadge';
 import { ROLES } from '../../src/constants';
 
 export default function SignUpScreen() {
   const router = useRouter();
-  const { refreshProfile } = useAuth();
+  const { user, profile, loading: authLoading, refreshProfile } = useAuth();
   const { role: paramRole } = useLocalSearchParams();
   const { colors, isDark } = useAppTheme();
+
+  useEffect(() => {
+    if (authLoading || !user || !profile) return;
+    if (profile.role === ROLES.TEACHER) {
+      router.replace('/(teacher)/dashboard');
+    } else if (profile.role === ROLES.STUDENT) {
+      router.replace(profile.faceRegistered ? '/(student)/dashboard' : '/(student)/face-register');
+    }
+  }, [authLoading, user, profile, router]);
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -61,7 +72,14 @@ export default function SignUpScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView contentContainerStyle={styles.scroll}>
-        <View style={styles.header}>
+        <FadeInView style={styles.header}>
+          <IconBadge
+            name={isTeacher ? 'account-tie' : 'account-plus-outline'}
+            size={32}
+            boxSize={64}
+            borderRadius={20}
+            style={{ marginBottom: 10 }}
+          />
           <Text style={[styles.brand, { color: colors.primary }]}>AttendX</Text>
           <Text variant="headlineSmall" style={[styles.title, { color: colors.text }]}>
             Create {isTeacher ? 'Teacher' : 'Student'} Account
@@ -69,9 +87,10 @@ export default function SignUpScreen() {
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             {isTeacher ? 'Start managing classes and attendance' : 'Join classes & enroll your biometric face'}
           </Text>
-        </View>
+        </FadeInView>
 
-        <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
+        <FadeInView delay={70}>
+          <Card style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} mode="outlined">
           <Card.Content style={styles.cardContent}>
             <TextInput
               label="Full Name *"
@@ -138,11 +157,13 @@ export default function SignUpScreen() {
 
             <Button
               mode="contained"
+              icon="account-check-outline"
               onPress={handleSignUp}
               loading={loading}
               disabled={loading}
               style={styles.btn}
               buttonColor={colors.primary}
+              textColor="#FFFFFF"
               contentStyle={styles.btnContent}
             >
               Create Account
@@ -155,6 +176,7 @@ export default function SignUpScreen() {
             </Link>
           </Card.Content>
         </Card>
+        </FadeInView>
       </ScrollView>
     </SafeAreaView>
   );

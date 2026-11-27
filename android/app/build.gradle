@@ -122,6 +122,7 @@ android {
         }
     }
     androidResources {
+        noCompress += ['bin', 'ttf', 'otf', 'tflite']
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
     }
 }

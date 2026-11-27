@@ -111,7 +111,7 @@ export default function TeacherNotesScreen() {
       setLinkUrl('');
       setSelectedFile(null);
       setUploadProgress(null);
-      Alert.alert('Success 🎉', 'File uploaded & published to classroom!');
+      Alert.alert('Upload Complete', 'File uploaded & published to classroom!');
     } catch (error) {
       console.error('Upload note error:', error);
       Alert.alert('Upload Failed', error.message || 'Could not upload file');
@@ -214,7 +214,7 @@ export default function TeacherNotesScreen() {
               styles.filePickerBox,
               {
                 borderColor: selectedFile ? colors.primary : colors.border,
-                backgroundColor: isDark ? colors.surfaceAccent : (selectedFile ? THEME_COLORS.primaryLight : '#F9FAFB'),
+                backgroundColor: selectedFile ? colors.primarySoft : colors.surfaceVariant,
               },
             ]}
             onPress={handlePickFile}

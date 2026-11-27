@@ -29,7 +29,7 @@ export default function JoinClassScreen() {
       const classroom = await joinClassroom(uid, code.trim());
 
       Alert.alert(
-        'Successfully Enrolled! 🎉',
+        'Successfully Enrolled',
         `You have joined "${classroom.className}" (${classroom.subject || 'General'}).\n\nThis classroom is now permanently visible in your dashboard and notes.`,
         [
           {
