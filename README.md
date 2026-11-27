@@ -126,4 +126,15 @@ For a startup-grade product, replace the placeholder face matcher in `src/servic
 
 ## License
 
-MIT
+
+Copyright (c) 2026 Pushkaraj Mahesh Umbare
+
+All rights reserved.
+
+This project, including its source code, application design,
+documentation, and original assets, is proprietary.
+
+No permission is granted to copy, modify, distribute,
+publish, or commercially use this project or any part
+of it without prior written permission from the copyright owner.
+
